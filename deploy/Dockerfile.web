@@ -1,0 +1,10 @@
+FROM node:22-slim
+WORKDIR /w
+COPY web/package*.json ./
+RUN npm ci
+COPY web/ ./
+# Both are read at build time: the sub-path nginx serves the app under, and where /api is proxied.
+ARG NEXT_PUBLIC_BASE_PATH=/numen
+ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH NUMEN_API_URL=http://backend:7860
+RUN npm run build
+CMD ["npx", "next", "start", "-p", "3000", "-H", "0.0.0.0"]

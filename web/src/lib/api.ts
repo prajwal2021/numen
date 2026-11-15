@@ -1,5 +1,10 @@
 // Thin typed client for the FastAPI admin API (proxied at /api by next.config.ts).
 
+// Set when the app is served under a sub-path (e.g. /numen behind nginx). Next.js prefixes
+// <Link> and router paths itself, but not raw URLs like fetch(), so those use API_BASE.
+export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+export const API_BASE = `${BASE_PATH}/api`;
+
 export class ApiError extends Error {
   status: number;
   fields: { field: string; message: string }[];
@@ -11,7 +16,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,

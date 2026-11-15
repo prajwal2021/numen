@@ -12,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, Mono, Page, PageHeader, Pill } from "@/components/common";
-import { api } from "@/lib/api";
+import { api, API_BASE } from "@/lib/api";
 import type { User } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
@@ -140,7 +140,7 @@ export default function AuditLogsPage() {
               <Switch checked={live} onCheckedChange={setLive} />
             </label>
             <Button variant="outline" asChild>
-              <a href={`/api/audit/export?${params}`} download>
+              <a href={`${API_BASE}/audit/export?${params}`} download>
                 <Download /> Export CSV
               </a>
             </Button>

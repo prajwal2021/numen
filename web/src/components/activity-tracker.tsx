@@ -2,6 +2,10 @@
 
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
+import { API_BASE, BASE_PATH } from "@/lib/api";
+
+// The app-relative path, without the deployment's base path.
+const appPath = () => (window.location.pathname.slice(BASE_PATH.length) || "/") + window.location.search;
 
 /**
  * Records page views and clicks for the admin Audit logs panel.
@@ -52,10 +56,10 @@ function send(events: Ev[], beacon = false) {
   if (!events.length) return;
   const body = JSON.stringify({ events });
   if (beacon && navigator.sendBeacon) {
-    navigator.sendBeacon("/api/audit/events", new Blob([body], { type: "application/json" }));
+    navigator.sendBeacon(`${API_BASE}/audit/events`, new Blob([body], { type: "application/json" }));
     return;
   }
-  fetch("/api/audit/events", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true, credentials: "same-origin" }).catch(() => {});
+  fetch(`${API_BASE}/audit/events`, { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true, credentials: "same-origin" }).catch(() => {});
 }
 
 export function ActivityTracker() {
@@ -65,12 +69,12 @@ export function ActivityTracker() {
   const lastView = useRef<{ path: string; at: number } | null>(null);
 
   useEffect(() => {
-    const path = window.location.pathname + window.location.search;
+    const path = appPath();
     // One entry per navigation (React dev mode runs effects twice).
     if (lastView.current && lastView.current.path === path && Date.now() - lastView.current.at < 1500) return;
     lastView.current = { path, at: Date.now() };
     const tab = new URLSearchParams(window.location.search).get("tab");
-    queue.current.push({ type: "page_view", action: `Opened ${pageName(window.location.pathname)}${tab ? ` (${tab} tab)` : ""}`, path, at: new Date().toISOString() });
+    queue.current.push({ type: "page_view", action: `Opened ${pageName(pathname)}${tab ? ` (${tab} tab)` : ""}`, path, at: new Date().toISOString() });
   }, [pathname]);
 
   useEffect(() => {
@@ -85,7 +89,7 @@ export function ActivityTracker() {
         type: "click",
         action: `Clicked “${label}”`,
         target: href ?? kind,
-        path: window.location.pathname + window.location.search,
+        path: appPath(),
         at: new Date().toISOString(),
         meta: { element: kind, ...(state ? { state_before: state } : {}), ...(href ? { href } : {}) },
       });

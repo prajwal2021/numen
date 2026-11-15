@@ -109,6 +109,7 @@ _ENV = {
     "elevenlabs_api_key": "ELEVENLABS_API_KEY",
     "openai_api_key": "OPENAI_API_KEY",
     "public_base_url": "PUBLIC_BASE_URL",
+    "app_base_url": "APP_BASE_URL",
 }
 
 

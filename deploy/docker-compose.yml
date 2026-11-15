@@ -1,0 +1,39 @@
+# Numen on tosmonline0001: https://tosmonline0001.ttu.edu/numen (web) and /numen-voice (Twilio).
+# Ports are loopback-only; the shared nginx (deploy/nginx-numen.conf) is the public entry.
+# Run from the repo root:  docker compose -f deploy/docker-compose.yml up -d --build
+name: numen
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: numen
+      POSTGRES_DB: numen
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in deploy/.env}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U numen"]
+      interval: 5s
+      retries: 10
+
+  backend:
+    build: {context: .., dockerfile: deploy/Dockerfile.backend}
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://numen:${POSTGRES_PASSWORD}@db:5432/numen
+      PUBLIC_BASE_URL: https://tosmonline0001.ttu.edu/numen-voice
+      APP_BASE_URL: https://tosmonline0001.ttu.edu/numen
+      LOG_DIR: /app/logs
+    depends_on: {db: {condition: service_healthy}}
+    ports: ["127.0.0.1:7860:7860"]
+    volumes: ["../logs:/app/logs"]
+
+  web:
+    build: {context: .., dockerfile: deploy/Dockerfile.web}
+    restart: unless-stopped
+    depends_on: [backend]
+    ports: ["127.0.0.1:3001:3000"]
+
+volumes:
+  pgdata:
