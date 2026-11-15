@@ -226,3 +226,7 @@ logs/
 
 # Local data
 data/
+
+# Next.js app source (must not be caught by the Python lib/ rule above)
+!web/src/lib/
+!web/src/app/(app)/admin/logs/
