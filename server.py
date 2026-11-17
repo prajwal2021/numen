@@ -16,7 +16,8 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from xml.sax.saxutils import quoteattr
+from urllib.parse import quote
+from xml.sax.saxutils import escape, quoteattr
 
 from dotenv import load_dotenv
 
@@ -30,6 +31,7 @@ from loguru import logger  # noqa: E402
 from pipecat.runner.types import WebSocketRunnerArguments  # noqa: E402
 
 from numen import accounts, api, api_users, audit, bot, store  # noqa: E402
+from numen.capacity import Decision, limiter  # noqa: E402
 from numen.auth import client_ip  # noqa: E402
 from numen.calllog import LOG_DIR  # noqa: E402
 from numen.models import Agent  # noqa: E402
@@ -102,6 +104,7 @@ _ACTIONS = {
     ("DELETE", "/api/phone-numbers/{pn_id}"): "Removed phone number",
     ("POST", "/api/phone-numbers/{pn_id}/connect"): "Connected phone number to Twilio",
     ("PUT", "/api/settings"): "Updated settings",
+    ("PUT", "/api/capacity/drain"): "Changed call draining (deploy mode)",
     ("POST", "/api/settings/check/{provider}"): "Tested a provider connection",
     ("POST", "/api/voices/preview"): "Previewed a voice",
 }
@@ -146,7 +149,57 @@ def _twiml(body: str) -> Response:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    """Liveness plus load, for the load balancer / uptime monitor (counts only, no call data)."""
+    snap = limiter.snapshot()
+    return {"status": "ok", "active_calls": snap["active_calls"], "max_calls": snap["max_calls"],
+            "queued_callers": snap["queued_callers"], "draining": snap["draining"]}
+
+
+# Where a caller goes when the line is full and they can't wait: a human line if configured.
+OVERFLOW_NUMBER = os.getenv("OVERFLOW_TRANSFER_NUMBER", "")
+HOLD_MUSIC_URL = os.getenv("HOLD_MUSIC_URL", "")  # short clip (<= ~8 s), played between the hold messages
+
+_TURN_AWAY = {
+    "full": "We're sorry, all of our lines are busy right now. Please call back in a few minutes. Goodbye.",
+    "timeout": "We're sorry, we couldn't connect you in time. Please call back in a few minutes. Goodbye.",
+    "caller_limit": "We're sorry, you already have calls in progress with us. Goodbye.",
+    "draining": "We're sorry, our service is restarting. Please call back in a minute. Goodbye.",
+    "expired": "We're sorry, we lost your place in line. Please call back. Goodbye.",
+}
+
+
+def _turn_away(reason: str) -> Response:
+    if OVERFLOW_NUMBER and reason in ("full", "timeout"):
+        return _twiml(f"<Say>All of our assistants are busy. Connecting you to a team member.</Say>"
+                      f"<Dial>{escape(OVERFLOW_NUMBER)}</Dial>")
+    return _twiml(f"<Say>{escape(_TURN_AWAY.get(reason, _TURN_AWAY['full']))}</Say><Hangup/>")
+
+
+def _hold(request: Request, d: Decision) -> Response:
+    """Keep a queued caller on the line: a message, a pause, then come back to /incoming/hold."""
+    url = f"https://{_public_host(request)}/incoming/hold?ticket={quote(d.ticket)}"
+    lead = ""
+    if d.polls == 0:
+        n = d.position
+        lead = (f"<Say>All of our assistants are helping other callers. Please stay on the line. "
+                f"You are number {n} in line.</Say>")
+    elif d.polls % 4 == 0:
+        lead = f"<Say>Thank you for holding. You are number {d.position} in line.</Say>"
+    wait = (f"<Play>{escape(HOLD_MUSIC_URL)}</Play>" if HOLD_MUSIC_URL
+            else f'<Pause length="{limiter.limits.hold_poll_s}"/>')
+    return _twiml(f'{lead}{wait}<Redirect method="POST">{escape(url)}</Redirect>')
+
+
+async def _admit_twiml(request: Request, agent: Agent, frm: str | None, to: str | None) -> Response:
+    """The TwiML that connects an admitted call to the agent (after its ring time)."""
+    if agent.conversation.ring_seconds > 0:
+        await asyncio.sleep(min(agent.conversation.ring_seconds, 10))
+    stream_url = f"wss://{_public_host(request)}/ws"
+    params = "".join(
+        f"<Parameter name={quoteattr(k)} value={quoteattr(str(v or ''))} />"
+        for k, v in {"agent_id": agent.id, "from": frm, "to": to}.items()
+    )
+    return _twiml(f"<Connect><Stream url={quoteattr(stream_url)}>{params}</Stream></Connect>")
 
 
 @app.post("/incoming")
@@ -154,21 +207,38 @@ async def incoming_call(request: Request):
     """Twilio voice webhook for every connected number."""
     form = await request.form()
     to, frm, sid = form.get("To"), form.get("From"), form.get("CallSid")
-    number = store.number_for(to)
-    agent = store.get(Agent, number.agent_id) if number and number.agent_id else None
+    # Database lookups are blocking; keep them off the event loop that carries every live call's audio.
+    number = await asyncio.to_thread(store.number_for, to)
+    agent = await asyncio.to_thread(store.get, Agent, number.agent_id) if number and number.agent_id else None
     logger.info(f"Incoming call {sid} from {frm} to {to} -> agent {agent.name if agent else 'NONE'}")
     if agent is None:
         return _twiml("<Say>We're sorry, this number is not in service yet. Goodbye.</Say><Hangup/>")
 
-    if agent.conversation.ring_seconds > 0:
-        await asyncio.sleep(min(agent.conversation.ring_seconds, 10))
+    d = limiter.admit(sid, frm or "", meta=(agent.id, frm, to))
+    logger.info(f"Call {sid}: {d.status} {d.reason} (active {limiter.live}/{limiter.limits.max_calls}, "
+                f"queued {limiter.queued})")
+    if d.status == "rejected":
+        audit.record("system", f"Turned away a call ({d.reason})", target=sid, caller=frm, dialed=to)
+        return _turn_away(d.reason)
+    if d.status == "queued":
+        return _hold(request, d)
+    return await _admit_twiml(request, agent, frm, to)
 
-    stream_url = f"wss://{_public_host(request)}/ws"
-    params = "".join(
-        f"<Parameter name={quoteattr(k)} value={quoteattr(str(v or ''))} />"
-        for k, v in {"agent_id": agent.id, "from": frm, "to": to}.items()
-    )
-    return _twiml(f"<Connect><Stream url={quoteattr(stream_url)}>{params}</Stream></Connect>")
+
+@app.post("/incoming/hold")
+async def incoming_hold(request: Request, ticket: str = ""):
+    """The hold loop: every few seconds a queued caller's call comes back here."""
+    d = limiter.poll(ticket)
+    if d.status == "queued":
+        return _hold(request, d)
+    if d.status == "rejected":
+        return _turn_away(d.reason)
+    agent_id, frm, to = d.meta
+    agent = await asyncio.to_thread(store.get, Agent, agent_id)
+    if agent is None:
+        limiter.release(d.call_sid)
+        return _turn_away("expired")
+    return await _admit_twiml(request, agent, frm, to)
 
 
 @app.websocket("/ws")

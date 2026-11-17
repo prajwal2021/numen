@@ -124,6 +124,62 @@ for that call). The record has the caller and dialed numbers, the agent, a confi
 answer, result, HTTP status and latency, transfers, errors) and a summary. Server-wide log:
 `logs/server.log` (rotated daily, kept 30 days).
 
+## Capacity and scaling
+
+**How many calls at once?** `MAX_CONCURRENT_CALLS` (default 10). Calls beyond it wait in a queue
+instead of degrading everyone's audio. The number is a *ceiling you set*, bounded by whichever of
+these is lowest, and none of them has been load-tested yet, so calibrate with real calls:
+
+| Limit | Why it binds | What to do |
+|---|---|---|
+| ElevenLabs plan concurrency | Each call holds an STT and a TTS websocket. Plans cap concurrent requests; this is usually the first limit hit. | Set `MAX_CONCURRENT_CALLS` at or below your plan's limit. |
+| One CPU core / event loop | All calls share one asyncio loop: VAD (ONNX), mu-law and resampling, websocket I/O. Rough guess: 5-10 % of a core per call. | Watch `/api/capacity` and CPU while placing test calls; raise the cap until audio gets choppy, then back off ~30 %. |
+| OpenAI rate limits | Requests and tokens per minute, shared by all calls. | Check your tier; 429s show up in the call logs. |
+| Memory | ~50-100 MB per call (estimate), plus ~10 MB per pre-built VAD. | Size the container for `MAX_CONCURRENT_CALLS` x 100 MB + 1 GB. |
+
+**What happens at call N+1?** Twilio doesn't limit inbound calls, so the call arrives and
+`/incoming` decides (`numen/capacity.py`):
+
+1. A free slot -> the call connects to the agent after its ring time.
+2. No slot, queue not full -> a FIFO queue. The caller hears "you are number N in line" and the
+   optional `HOLD_MUSIC_URL`; their call loops through `POST /incoming/hold` every ~8 s (that is
+   how a hung-up caller is noticed and dropped, and how a freed slot reaches the head of the
+   queue). `MAX_QUEUE_SIZE` callers wait, each at most `MAX_QUEUE_WAIT_SECONDS`.
+3. Queue full or wait over -> `OVERFLOW_TRANSFER_NUMBER` if set (a human line), else a polite
+   "call back later" and hang up.
+
+**Other protections**
+- `MAX_CALLS_PER_CALLER` (default 2): one phone number can't fill every slot, accidentally or on purpose.
+- `MAX_CALL_SECONDS` (default 30 min): the agent says goodbye and ends a stuck or abusive call, so a
+  slot (and your ElevenLabs/OpenAI bill) can't be held forever.
+- Slots can't leak: a reservation not claimed within 30 s (caller hung up while ringing) expires,
+  and the slot is released in a `finally` when the stream ends however it ends.
+- `/ws` re-checks capacity, so opening the stream directly can't bypass the limit.
+- The media stream is the only place a call runs. Webhooks, database reads and call-log writes
+  happen off the event loop (call logs are batched, about two writes per second per call instead of one
+  per event), so a busy server doesn't stall other callers' audio. A pool of pre-built VAD models
+  (`VAD_POOL_SIZE`) means a burst of calls doesn't wait ~2 s per call for a model.
+
+**Watching it:** `GET /health` (no login) returns `active_calls`, `max_calls`, `queued_callers`;
+`GET /api/capacity` (signed in) adds limits and counters: admitted, queued, turned away, queue
+timeouts, abandoned, peak, average wait.
+
+**Deploying without dropping calls:** `PUT /api/capacity/drain {"draining": true}` (admin) stops
+new calls (callers hear a restart message); wait until `/health` shows `active_calls: 0`, deploy,
+and the new process starts open. A restart without draining drops every live call.
+
+**Known limits and next steps**
+- **One process only.** Slots and the queue live in memory. Run a single backend container; two
+  replicas would each allow `MAX_CONCURRENT_CALLS` and split the hold loop between them. To scale
+  past one process, move `CallLimiter` state to Redis (same methods, atomic), keep `/ws` on the
+  node that got the webhook, and put replicas behind the nginx upstream. Until then scale up
+  (bigger machine, higher cap) rather than out.
+- A crash drops live calls; Twilio then ends them. There is no automatic retry or callback.
+- Twilio request signatures are not validated on `/incoming`, `/incoming/hold` or `/ws`.
+  Anyone who knows the URL can post fake calls, which the per-caller cap and the queue limit only
+  soften. Validating `X-Twilio-Signature` is the next hardening step.
+- Counters reset on restart. Capacity isn't shown in the web app yet; use the API.
+
 ## Code
 
 | Path | |
@@ -131,6 +187,7 @@ answer, result, HTTP status and latency, transfers, errors) and a summary. Serve
 | `server.py` | Twilio webhook, media stream, admin API, startup |
 | `numen/models.py` | Every setting an agent, knowledge base, number or the workspace supports |
 | `numen/store.py` | PostgreSQL persistence |
+| `numen/capacity.py` | Call admission: slots, FIFO hold queue, per-caller cap, drain mode |
 | `numen/bot.py` | The call pipeline, generic over agents |
 | `numen/prompt.py` | Builds the system prompt from the persona plus generated rule sections |
 | `numen/routing.py` | Office hours, holidays, transfers |

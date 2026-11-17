@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response as RawResponse
 from pydantic import BaseModel, ValidationError
 
-from . import audit, auth, integrations, kb_client, routing, store, testchat
+from . import audit, auth, capacity, integrations, kb_client, routing, store, testchat
 from .models import Agent, KnowledgeBase, PhoneNumber, Settings, new_id, utcnow
 from .prompt import system_prompt
 
@@ -55,6 +55,21 @@ def meta():
         "timezones": sorted(t for t in available_timezones() if "/" in t and not t.startswith("Etc/")),
         "webhook_url": integrations.webhook_url(),
     }
+
+
+@router.get("/capacity")
+async def get_capacity():
+    """Live load: calls running, callers on hold, limits, and counters since the server started."""
+    return capacity.limiter.snapshot()
+
+
+@router.put("/capacity/drain", dependencies=ADMIN)
+async def set_drain(body: dict, request: Request):
+    """Stop (or resume) answering new calls, so a deploy can wait for live calls to finish."""
+    on = bool(body.get("draining"))
+    capacity.limiter.set_draining(on)
+    _note(request, "capacity", draining=on)
+    return capacity.limiter.snapshot()
 
 
 @router.get("/analytics")

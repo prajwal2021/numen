@@ -28,6 +28,10 @@ services:
     depends_on: {db: {condition: service_healthy}}
     ports: ["127.0.0.1:7860:7860"]
     volumes: ["../logs:/app/logs"]
+    # Every live call holds ~5 sockets/files. Deploying drops live calls: first
+    # PUT /api/capacity/drain {"draining": true}, wait for /health active_calls = 0, then deploy.
+    ulimits: {nofile: {soft: 65536, hard: 65536}}
+    stop_grace_period: 30s
 
   web:
     build: {context: .., dockerfile: deploy/Dockerfile.web}

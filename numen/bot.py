@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -40,6 +41,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 from . import kb_client, routing, store
+from .capacity import limiter
 from .calllog import CallLog
 from .models import Agent, KnowledgeBase
 from .prompt import system_prompt
@@ -153,27 +155,31 @@ async def transfer_to_live_agent(params: FunctionCallParams):
 # ---------------------------------------------------------------------------- warm-up
 
 # Building a SileroVADAnalyzer creates an ONNX session (~2 s). Each call needs its own
-# (it is stateful), so keep one built ahead of time and replace it after each call takes it.
-_spare_vad: asyncio.Future | None = None
+# (it is stateful), so keep a few built ahead of time and top the pool up whenever a call
+# takes one. Each caller pops its own future: sharing one would let two simultaneous callers
+# drive the same analyzer. A burst bigger than the pool just builds extras in parallel threads.
+VAD_POOL_SIZE = int(os.getenv("VAD_POOL_SIZE", "3"))
+_spare_vads: list[asyncio.Future] = []
 
 
-def _refill_vad() -> None:
-    global _spare_vad
-    _spare_vad = asyncio.ensure_future(asyncio.to_thread(SileroVADAnalyzer))
+def _build_vad() -> asyncio.Future:
+    return asyncio.ensure_future(asyncio.to_thread(SileroVADAnalyzer))
+
+
+def _top_up_vads() -> None:
+    while len(_spare_vads) < VAD_POOL_SIZE:
+        _spare_vads.append(_build_vad())
 
 
 async def prepare_spare_vad() -> None:
-    if _spare_vad is None:
-        _refill_vad()
-    await _spare_vad
+    _top_up_vads()
+    await asyncio.gather(*_spare_vads)
 
 
 async def _take_vad() -> SileroVADAnalyzer:
-    if _spare_vad is None:
-        _refill_vad()
-    vad = await _spare_vad
-    _refill_vad()
-    return vad
+    fut = _spare_vads.pop(0) if _spare_vads else _build_vad()
+    _top_up_vads()
+    return await fut
 
 
 def prewarm() -> None:
@@ -207,8 +213,10 @@ def config_snapshot(agent: Agent, kb: KnowledgeBase | None, prompt: str) -> dict
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent: Agent, log: CallLog,
                   call_sid: str | None) -> None:
-    settings = store.get_settings()
-    kb = store.get(KnowledgeBase, agent.knowledge.knowledge_base_id) if agent.knowledge.knowledge_base_id else None
+    # Blocking database reads run in threads: the event loop also carries every other live call's audio.
+    settings = await asyncio.to_thread(store.get_settings)
+    kb_id = agent.knowledge.knowledge_base_id
+    kb = await asyncio.to_thread(store.get, KnowledgeBase, kb_id) if kb_id else None
     session = CallSession(agent, kb, call_sid, log)
     prompt = system_prompt(agent)
     log.set_config(config_snapshot(agent, kb, prompt))
@@ -302,11 +310,25 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
             log.end_reason = "caller hung up"
         await runner.cancel()
 
+    async def enforce_max_duration():
+        """Hard cap on call length: a stuck or abusive call can't hold a slot (and bills) forever."""
+        await asyncio.sleep(limiter.limits.max_call_s)
+        if session.transferring:
+            return
+        log.end_reason = "maximum call length reached"
+        log.event("max_call_length", seconds=limiter.limits.max_call_s)
+        await session.say_and_wait("We've reached the maximum length for this call. Goodbye.", source="max_duration")
+        await runner.cancel()
+
+    limit_task = asyncio.create_task(enforce_max_duration()) if limiter.limits.max_call_s else None
     try:
         await runner.run()
     except Exception as e:
         log.error("pipeline crashed", exception=f"{type(e).__name__}: {e}")
         raise
+    finally:
+        if limit_task:
+            limit_task.cancel()
 
 
 async def after_hours(session: CallSession) -> None:
@@ -324,24 +346,36 @@ async def bot(runner_args: RunnerArguments) -> None:
     _, call_data = await parse_telephony_websocket(runner_args.websocket)
     params = call_data.get("body") or {}  # <Parameter>s from the TwiML in server.py
     call_sid = call_data.call_id
-    log = CallLog(call_sid, call_data.stream_id, params.get("from"), params.get("to"))
-    with logger.contextualize(call_sid=call_sid):
-        try:
-            agent = store.get(Agent, params["agent_id"]) if params.get("agent_id") else None
-            if agent is None:
-                number = store.number_for(params.get("to"))
-                agent = store.get(Agent, number.agent_id) if number and number.agent_id else None
-            log.set_agent(agent.id if agent else None, agent.name if agent else None)
-            logger.info(f"Call {call_sid} from {params.get('from')} to {params.get('to')} -> "
-                        f"agent {agent.name if agent else 'NONE'}")
-            transport = _transport(runner_args, call_data)
-            if agent is None:
-                log.error("no agent assigned to the dialed number", to=params.get("to"))
-                log.end_reason = "no agent assigned"
-                return
-            await run_bot(transport, runner_args, agent, log, call_sid)
-        finally:
-            log.finish()
+    # The slot reserved at /incoming becomes live here. No slot (reservation expired, or someone
+    # opened /ws directly) and the server is full: refuse rather than degrade every live call.
+    if not limiter.connect(call_sid, params.get("from") or ""):
+        logger.warning(f"Refused media stream for {call_sid}: at capacity or draining")
+        await runner_args.websocket.close()
+        return
+    try:
+        log = await asyncio.to_thread(CallLog, call_sid, call_data.stream_id, params.get("from"), params.get("to"))
+        with logger.contextualize(call_sid=call_sid):
+            try:
+                agent = None
+                if params.get("agent_id"):
+                    agent = await asyncio.to_thread(store.get, Agent, params["agent_id"])
+                if agent is None:
+                    number = await asyncio.to_thread(store.number_for, params.get("to"))
+                    agent = await asyncio.to_thread(store.get, Agent, number.agent_id) if number and number.agent_id else None
+                log.set_agent(agent.id if agent else None, agent.name if agent else None)
+                logger.info(f"Call {call_sid} from {params.get('from')} to {params.get('to')} -> "
+                            f"agent {agent.name if agent else 'NONE'} "
+                            f"(active {limiter.live}/{limiter.limits.max_calls})")
+                transport = _transport(runner_args, call_data)
+                if agent is None:
+                    log.error("no agent assigned to the dialed number", to=params.get("to"))
+                    log.end_reason = "no agent assigned"
+                    return
+                await run_bot(transport, runner_args, agent, log, call_sid)
+            finally:
+                await asyncio.to_thread(log.finish)
+    finally:
+        limiter.release(call_sid)  # frees the slot and promotes the next caller in the queue
 
 
 def _transport(runner_args: RunnerArguments, call_data) -> FastAPIWebsocketTransport:

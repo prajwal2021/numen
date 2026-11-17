@@ -10,11 +10,14 @@ LOG_DIR/calls/<YYYY-MM-DD>/ (Central time):
                            found, latency, status), transfers, errors, and a summary.
   <HHMMSS>_<CallSid>.log   the full debug log for that call only (every Pipecat line).
 
-The JSON is rewritten after every event, so a crash or kill still leaves a usable record.
+The JSON is rewritten shortly after each event (batched, at most every FLUSH_SECONDS, off the
+event loop), so a crash or kill still leaves a usable record, and N live calls don't each
+block the loop on a file write and a database upsert for every event.
 Question and answer text is logged on purpose (the operator chose this over the KB
 service guide's "don't log questions or answers").
 """
 
+import asyncio
 import json
 import os
 import threading
@@ -28,6 +31,7 @@ from loguru import logger
 
 from . import audit, store
 
+FLUSH_SECONDS = 0.5
 CENTRAL = ZoneInfo("America/Chicago")
 LOG_DIR = Path(os.getenv("LOG_DIR", Path(__file__).resolve().parent.parent / "logs"))
 
@@ -40,6 +44,9 @@ class CallLog:
     def __init__(self, call_sid: str, stream_sid: str | None, from_number: str | None, to_number: str | None):
         self.call_sid = call_sid
         self._db_lock = threading.Lock()
+        self._flush_scheduled = False
+        self._seq = 0  # snapshot counter; a late-running older snapshot never overwrites a newer one
+        self._written_seq = 0
         self._t0 = time.monotonic()
         started = _now()
         folder = LOG_DIR / "calls" / started.strftime("%Y-%m-%d")
@@ -134,20 +141,47 @@ class CallLog:
             "errors": len(self.record["errors"]),
         }
         logger.info(f"[call] ended ({call['end_reason']}) after {call['duration_s']}s: {self.record['summary']}")
-        self._write()
+        self._write(now=True)
         agent = self.record.get("agent") or {}
         audit.record("call", f"Call {call['end_reason']}", target=self.call_sid, agent=agent.get("name"),
                      caller=call.get("from"), dialed=call.get("to"), duration_s=call["duration_s"],
                      **{k: v for k, v in self.record["summary"].items() if k in ("kb_lookups", "kb_hits", "transfers", "errors")})
         logger.remove(self._sink_id)
 
-    def _write(self) -> None:
-        data = json.dumps(self.record, indent=2, ensure_ascii=False, default=str)
-        tmp = self.json_path.with_suffix(".json.tmp")
-        tmp.write_text(data)
-        tmp.replace(self.json_path)
-        try:
-            with self._db_lock:
+    def _write(self, now: bool = False) -> None:
+        """Save the record. On the event loop this is batched and persisted in a thread; `now`
+        (and any call outside a loop) saves immediately, in the caller's thread."""
+        if not now:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                if not self._flush_scheduled:
+                    self._flush_scheduled = True
+                    loop.call_later(FLUSH_SECONDS, self._snapshot_and_persist, loop)
+                return
+        self._persist(*self._snapshot())
+
+    def _snapshot(self) -> tuple[int, str]:
+        # Serialised on the thread that mutates the record, so it can't change mid-dump.
+        self._seq += 1
+        return self._seq, json.dumps(self.record, indent=2, ensure_ascii=False, default=str)
+
+    def _snapshot_and_persist(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._flush_scheduled = False
+        seq, data = self._snapshot()
+        loop.run_in_executor(None, self._persist, seq, data)
+
+    def _persist(self, seq: int, data: str) -> None:
+        with self._db_lock:
+            if seq < self._written_seq:
+                return
+            self._written_seq = seq
+            try:
+                tmp = self.json_path.with_suffix(".json.tmp")
+                tmp.write_text(data)
+                tmp.replace(self.json_path)
                 store.save_call(json.loads(data))
-        except Exception:
-            logger.exception("Saving call record to the database failed")
+            except Exception:
+                logger.exception("Saving call record failed")
