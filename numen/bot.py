@@ -14,7 +14,9 @@ import re
 from typing import Literal
 
 from loguru import logger
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADAnalyzer
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -44,7 +46,8 @@ from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.turns.user_mute import MuteUntilFirstBotCompleteUserMuteStrategy
 from pipecat.turns.user_mute.base_user_mute_strategy import BaseUserMuteStrategy
-from pipecat.turns.user_turn_strategies import UserTurnStrategies, default_user_turn_stop_strategies
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 from . import audit, kb_client, routing, store
@@ -258,43 +261,63 @@ def promises_lookup(text: str, filler: str) -> bool:
 # drive the same analyzer. A burst bigger than the pool just builds extras in parallel threads.
 # The smart-turn end-of-turn model (an ONNX session, ~40 ms to load) gets the same treatment:
 # loaded on the event loop, ten calls starting together stalled every call's audio ~0.4 s.
+#
+# The models are also reused from call to call rather than built and thrown away: creating and
+# freeing two ONNX sessions per call made the server's memory grow ~30 MB per call under load
+# (the allocator kept what they freed). A pool holds at most one set per simultaneous call.
 VAD_POOL_SIZE = int(os.getenv("VAD_POOL_SIZE", "3"))
 
 
-class _Pool:
-    """Objects that are slow to build, built in threads ahead of time."""
+class _ModelPool:
+    """Loaded models, built in threads, lent to one call at a time and given back."""
 
-    def __init__(self, build, size: int):
-        self._build, self._size = build, size
-        self._spare: list[asyncio.Future] = []
-
-    def _new(self) -> asyncio.Future:
-        return asyncio.ensure_future(asyncio.to_thread(self._build))
-
-    def top_up(self) -> None:
-        while len(self._spare) < self._size:
-            self._spare.append(self._new())
+    def __init__(self, build, reset, warm: int):
+        self._build, self._reset, self._warm = build, reset, warm
+        self._free: list = []
 
     async def ready(self) -> None:
-        self.top_up()
-        await asyncio.gather(*self._spare)
+        self._free += await asyncio.gather(*[asyncio.to_thread(self._build) for _ in range(self._warm)])
 
     async def take(self):
-        fut = self._spare.pop(0) if self._spare else self._new()
-        self.top_up()
-        return await fut
+        return self._free.pop() if self._free else await asyncio.to_thread(self._build)
+
+    def give(self, model) -> None:
+        try:
+            self._reset(model)
+        except Exception:
+            logger.exception("Couldn't reset a pooled model; dropping it")
+            return
+        self._free.append(model)
+
+    @property
+    def size(self) -> int:
+        return len(self._free)
 
 
-_vads = _Pool(SileroVADAnalyzer, VAD_POOL_SIZE)
-_turn_stops = _Pool(default_user_turn_stop_strategies, VAD_POOL_SIZE)
+def _load_silero_model():
+    return SileroVADAnalyzer()._model
+
+
+class _PooledSileroVAD(SileroVADAnalyzer):
+    """A fresh Silero VAD analyzer (fresh per-call state) around an already-loaded model."""
+
+    def __init__(self, model):
+        VADAnalyzer.__init__(self)  # skip SileroVADAnalyzer.__init__: it loads a new model
+        self._model = model
+        self._windows_since_reset = 0
+        self._low_confidence_windows = 0
+
+
+def _new_turn_analyzer():
+    return LocalSmartTurnAnalyzerV3()
+
+
+_vad_models = _ModelPool(_load_silero_model, lambda m: m.reset_states(), VAD_POOL_SIZE)
+_turn_analyzers = _ModelPool(_new_turn_analyzer, lambda a: a.clear(), VAD_POOL_SIZE)
 
 
 async def prepare_spare_vad() -> None:
-    await asyncio.gather(_vads.ready(), _turn_stops.ready())
-
-
-async def _take_vad() -> SileroVADAnalyzer:
-    return await _vads.take()
+    await asyncio.gather(_vad_models.ready(), _turn_analyzers.ready())
 
 
 def prewarm() -> None:
@@ -378,7 +401,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
             log.event("bot_said", source="lookup_filler", text=filler)
             await service.push_frame(TTSSpeakFrame(filler))
 
-    vad = await _take_vad()
+    vad_model = await _vad_models.take()
+    turn_analyzer = await _turn_analyzers.take()
+    vad = _PooledSileroVAD(vad_model)
     caller_speech = CallerSpeechTurnStartStrategy(
         min_words=conv.min_words_to_interrupt,
         min_dbfs=LOUDNESS_DB_BY_FILTER.get(conv.background_voice_filter),
@@ -398,7 +423,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
             # A turn nothing else has ended (e.g. a short reply said over the agent, answered
             # once it stops) ends after this long without the caller speaking. Default 5 s.
             user_turn_stop_timeout=2.5,
-            user_turn_strategies=UserTurnStrategies(start=[caller_speech], stop=await _turn_stops.take()),
+            user_turn_strategies=UserTurnStrategies(
+                start=[caller_speech], stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=turn_analyzer)]),
         ),
     )
 
@@ -484,6 +510,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
     finally:
         if limit_task:
             limit_task.cancel()
+        # The pipeline is finished with them: back to the pool for the next call.
+        _vad_models.give(vad_model)
+        _turn_analyzers.give(turn_analyzer)
 
 
 async def after_hours(session: CallSession) -> None:
