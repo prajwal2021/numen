@@ -226,3 +226,63 @@ def test_filter_off_reacts_to_any_transcript():
 
 def test_strong_filter_is_stricter():
     assert audio.LOUDNESS_DB_BY_FILTER["strong"] > audio.LOUDNESS_DB_BY_FILTER["standard"]
+
+
+def test_short_reply_phrases():
+    for t in ("Thank you.", "Okay.", "No, thank you.", "Okay. Thank you.", "That's all.", "Goodbye.", "Yeah.", "Thanks so much!"):
+        assert audio.is_short_reply(t), t
+    for t in ("this topic", "Would you like additional information", "How much does it cost?", ""):
+        assert not audio.is_short_reply(t), t
+
+
+def test_short_reply_over_the_agent_is_held_until_it_stops():
+    from pipecat.frames.frames import BotStoppedSpeakingFrame
+
+    async def go():
+        s = Recorder(min_words=3)
+        await s.process_frame(BotStartedSpeakingFrame())
+        await s.feed(voice(-22, 400))
+        await s.process_frame(tx("Thank you."))
+        assert s.started == 0 and s.resets == 0  # held, not dropped
+        await s.process_frame(InterimTranscriptionFrame(text="good", user_id="c", timestamp=""))
+        assert s.resets == 0
+        await s.process_frame(BotStoppedSpeakingFrame())
+        assert s.started == 1
+    run(go())
+
+
+def test_goodbye_over_the_agent_interrupts():
+    async def go():
+        s = Recorder(min_words=3)
+        await s.process_frame(BotStartedSpeakingFrame())
+        await s.feed(voice(-22, 400))
+        await s.process_frame(tx("Goodbye."))
+        assert s.started == 1
+    run(go())
+
+
+def test_echo_of_the_agent_is_not_held():
+    from pipecat.frames.frames import BotStoppedSpeakingFrame
+
+    async def go():
+        s = Recorder(min_words=3)
+        await s.process_frame(BotStartedSpeakingFrame())
+        await s.feed(voice(-22, 400))
+        await s.process_frame(tx("this topic"))
+        await s.process_frame(BotStoppedSpeakingFrame())
+        assert s.started == 0 and s.resets == 1
+    run(go())
+
+
+def test_acknowledgement_mid_answer_is_dropped():
+    from pipecat.frames.frames import BotStoppedSpeakingFrame
+
+    async def go():
+        s = Recorder(min_words=3)
+        await s.process_frame(BotStartedSpeakingFrame())
+        await s.feed(voice(-22, 400))
+        await s.process_frame(tx("Okay."))
+        s._held_at -= audio.HELD_REPLY_SECS + 1  # said long before the agent finished
+        await s.process_frame(BotStoppedSpeakingFrame())
+        assert s.started == 0 and s.resets == 1
+    run(go())

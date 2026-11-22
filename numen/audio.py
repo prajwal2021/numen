@@ -4,6 +4,7 @@ and the turn-start strategy that keeps background voices from interrupting the a
 
 from __future__ import annotations
 
+import re
 import time
 from collections import deque
 
@@ -150,6 +151,24 @@ LOUD_WINDOW_SECS = 1.5
 TRANSCRIPT_GRACE_SECS = 2.5
 
 
+# Short replies a caller says over the agent ("thanks", "okay", "no") are too short to
+# interrupt it, but mustn't be lost: they're held and become the caller's turn as soon as the
+# agent stops talking. Only these phrases, so the agent's own echo can't start a turn.
+_SHORT_REPLY = re.compile(
+    r"^(?:(?:ok(?:ay)?|yes|yeah|yep|no|nope|sure|alright|all right|great|perfect|cool|"
+    r"thanks?(?: you)?(?: so much| very much| a lot)?|no thanks?(?: you)?|that'?s (?:all|it)|"
+    r"i'?m good|nothing else|got it|bye(?: bye)?|goodbye|good ?bye|have a (?:good|nice|great) (?:day|one))"
+    r"[\s,.!?-]*)+$", re.I)
+_GOODBYE = re.compile(r"\b(?:bye|goodbye|good bye)\b", re.I)
+# Held only if said this close to the end of the agent's speech: "okay" or "thanks" in the
+# middle of a long answer is just the caller acknowledging it.
+HELD_REPLY_SECS = 5.0
+
+
+def is_short_reply(text: str) -> bool:
+    return bool(text.strip()) and bool(_SHORT_REPLY.match(text.strip()))
+
+
 def frame_dbfs(pcm: bytes) -> float:
     a = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
     if not len(a):
@@ -182,10 +201,12 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
         # call log: shows whether real callers sit well above the filter's threshold.
         self.last_turn_dbfs: float | None = None
         self.last_ignored_dbfs: float | None = None  # loudest recent frame when a transcript was ignored
+        self._held_at: float | None = None  # a short reply said over the agent, waiting for it to stop
 
     async def handle_user_turn_started(self):
         self._bot_speaking = False
         self._in_turn = True
+        self._held_at = None
 
     async def handle_user_turn_stopped(self):
         self._in_turn = False
@@ -197,6 +218,13 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
             self._bot_speaking = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            if self._held_at is not None and not self._in_turn:
+                fresh = time.monotonic() - self._held_at < HELD_REPLY_SECS
+                self._held_at = None
+                if fresh:
+                    await self.report_user_turn_started()
+                else:
+                    await self.trigger_reset_aggregation()
         elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
             await self._handle_transcription(frame)
 
@@ -231,6 +259,15 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
             await self.trigger_reset_aggregation()
             return
         min_words = self._min_words if self._bot_speaking else 1
+        if self._bot_speaking and isinstance(frame, TranscriptionFrame) and is_short_reply(frame.text):
+            if _GOODBYE.search(frame.text):
+                min_words = 1  # "bye" over the agent: let them go now
+            else:
+                logger.debug(f"Holding short reply until the agent stops: {frame.text!r}")
+                self._held_at = time.monotonic()
+                return  # keep it in the aggregation
+        if self._held_at is not None and isinstance(frame, InterimTranscriptionFrame):
+            return  # don't clear a held reply while more words come in
         if count_spoken_words(frame.text) >= min_words:
             loud = sorted(d for _, d in self._levels if d >= (self._min_dbfs or -60) - 6)
             self.last_turn_dbfs = round(loud[len(loud) // 2], 1) if loud else None
