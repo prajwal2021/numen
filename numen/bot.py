@@ -385,7 +385,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
         settings=OpenAILLMService.Settings(model=agent.llm.model, system_instruction=prompt),
     )
     tools = [search_knowledge_base] if kb else []
-    if agent.routing.transfer_enabled:
+    if agent.routing.can_transfer:
         tools.append(transfer_to_live_agent)
     if agent.safety.enabled:
         tools.append(get_safety_help)

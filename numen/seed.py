@@ -67,6 +67,7 @@ def seed_if_empty() -> None:
         ),
         knowledge=KnowledgeConfig(knowledge_base_id=kb.id if kb else None),
         routing=RoutingConfig(
+            office_hours_enabled=True,
             holidays=holidays,
             transfer_number=os.getenv("TRANSFER_NUMBER") or "+18065154465",
             after_hours_action="transfer" if os.getenv("AFTER_HOURS_TRANSFER_NUMBER") else "answer",

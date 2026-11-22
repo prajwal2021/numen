@@ -15,6 +15,10 @@ def test_older_saved_agents_get_the_new_defaults():
 
 def test_end_call_tool_and_prompt_follow_the_setting():
     a = Agent(name="A")
+    # No transfer number yet: no transfer tool, and the prompt doesn't offer one.
+    assert "transfer_to_live_agent" not in [t["function"]["name"] for t in testchat.tools_for(a, has_kb=True)]
+    assert "offer to transfer" not in system_prompt(a)
+    a.routing.transfer_number = "+18065550100"
     names = [t["function"]["name"] for t in testchat.tools_for(a, has_kb=True)]
     assert names == ["search_knowledge_base", "transfer_to_live_agent", "get_safety_help", "end_call"]
     p = system_prompt(a)

@@ -89,7 +89,8 @@ def _default_week() -> dict[str, DaySchedule]:
 
 
 class RoutingConfig(BaseModel):
-    office_hours_enabled: bool = True
+    # Off for new agents: when on, the agent tells callers these hours, so they must be real.
+    office_hours_enabled: bool = False
     timezone: str = "America/Chicago"
     week: dict[str, DaySchedule] = Field(default_factory=_default_week)
     holidays: list[Holiday] = Field(default_factory=list)
@@ -120,6 +121,11 @@ class RoutingConfig(BaseModel):
     transfer_unavailable_message: str = (
         "I'm sorry, no one was available to take your call. Please call back later. Goodbye."
     )
+
+    @property
+    def can_transfer(self) -> bool:
+        """Transfers are on and there's a number to transfer to."""
+        return self.transfer_enabled and bool(self.transfer_number or self.after_hours_number)
 
     @field_validator("transfer_number", "after_hours_number", mode="before")
     @classmethod
@@ -204,10 +210,7 @@ class KnowledgeBase(BaseModel):
     url: str = ""
     api_key: str = ""
     timeout_s: float = Field(8, ge=1, le=30)
-    fallback_message: str = (
-        "I'm sorry, I don't have an answer for that. I can transfer you to our support center, "
-        "or you can ask me something else."
-    )
+    fallback_message: str = "I'm sorry, I don't have an answer for that. You can ask me something else."
     created_at: str = Field(default_factory=utcnow)
     updated_at: str = Field(default_factory=utcnow)
 

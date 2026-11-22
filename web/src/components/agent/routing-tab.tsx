@@ -153,7 +153,11 @@ export function RoutingTab({ draft, patch, errors }: { draft: Agent; patch: Patc
           <p className="text-[13px] text-muted-foreground">Off: callers are told no one is available.</p>
         ) : (
           <>
-            <Field label="Transfer number" error={errors["routing.transfer_number"]} hint="During office hours. E.164, e.g. +18065154465.">
+            <Field label="Transfer number" error={errors["routing.transfer_number"]} hint={
+                !r.transfer_number && !r.after_hours_number
+                  ? "Required: until a number is set, the agent won't offer transfers. E.164, e.g. +18065154465."
+                  : r.office_hours_enabled ? "During office hours. E.164, e.g. +18065154465." : "E.164, e.g. +18065154465."
+              }>
               <PhoneField value={r.transfer_number} onChange={(v) => patch("routing", { transfer_number: v })} error={errors["routing.transfer_number"]} />
             </Field>
             <Field label="Said before transferring">

@@ -75,7 +75,7 @@ TOOLS = {
 def tools_for(agent: Agent, has_kb: bool) -> list[dict]:
     """The same tools the live call gets (numen/bot.py run_bot)."""
     return (([TOOLS["search_knowledge_base"]] if has_kb else [])
-            + ([TOOLS["transfer_to_live_agent"]] if agent.routing.transfer_enabled else [])
+            + ([TOOLS["transfer_to_live_agent"]] if agent.routing.can_transfer else [])
             + ([TOOLS["get_safety_help"]] if agent.safety.enabled else [])
             + ([TOOLS["end_call"]] if agent.conversation.end_call_enabled else []))
 

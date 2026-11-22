@@ -14,8 +14,7 @@ export const EMPTY_KB: KBDraft = {
   url: "",
   api_key: "",
   timeout_s: 8,
-  fallback_message:
-    "I'm sorry, I don't have an answer for that. I can transfer you to our support center, or you can ask me something else.",
+  fallback_message: "I'm sorry, I don't have an answer for that. You can ask me something else.",
 };
 
 export function KBForm({

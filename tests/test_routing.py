@@ -14,7 +14,14 @@ def at(y, m, d, hh, mm=0):
 
 
 def cfg(**kw):
-    return RoutingConfig(transfer_number="+18065550100", **kw)
+    return RoutingConfig(**{"transfer_number": "+18065550100", "office_hours_enabled": True, **kw})
+
+
+def test_new_agents_have_no_office_hours_and_transfer_needs_a_number():
+    r = RoutingConfig()
+    assert not r.office_hours_enabled and not r.can_transfer
+    assert RoutingConfig(transfer_number="+18065550100").can_transfer
+    assert not RoutingConfig(transfer_number="+18065550100", transfer_enabled=False).can_transfer
 
 
 def test_weekday_hours():

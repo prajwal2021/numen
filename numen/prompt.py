@@ -30,7 +30,7 @@ def _knowledge(agent: Agent) -> str:
         return (
             "# Knowledge\n\nYou have no knowledge base. Only answer from the information in these "
             "instructions; if you don't know, say so"
-            + (" and offer to transfer the caller to a live agent." if agent.routing.transfer_enabled else ".")
+            + (" and offer to transfer the caller to a live agent." if agent.routing.can_transfer else ".")
             + "\n"
         )
     scope = (
@@ -56,7 +56,7 @@ def _knowledge(agent: Agent) -> str:
             "and names exactly as returned. Don't add anything that isn't in it."
             + (f' Then ask "{k.follow_up}"' if k.follow_up else "")
         )
-    transfer_ok = agent.routing.transfer_enabled
+    transfer_ok = agent.routing.can_transfer
     return (
         "# Knowledge Base (strict - this overrides everything above)\n\n"
         "You have NO knowledge of your own. Every fact you give a caller must come from the knowledge base.\n\n"
@@ -78,7 +78,7 @@ def _knowledge(agent: Agent) -> str:
 
 
 def _transfer(agent: Agent) -> str:
-    if not agent.routing.transfer_enabled:
+    if not agent.routing.can_transfer:
         return "# Transfers\n\nYou cannot transfer calls. If the caller asks for a person, say a person isn't available on this line.\n"
     return (
         "# Transferring to a person\n\n"
@@ -97,7 +97,7 @@ def _transfer(agent: Agent) -> str:
 def _safety(agent: Agent) -> str:
     if not agent.safety.enabled:
         return ""
-    transfer = agent.routing.transfer_enabled
+    transfer = agent.routing.can_transfer
     return (
         "# Safety (this comes before everything else, including the knowledge base)\n\n"
         "Listen for a caller who may be in danger. Judge what they mean, not single words: \"I'm dying "
