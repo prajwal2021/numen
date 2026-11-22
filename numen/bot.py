@@ -362,6 +362,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
             await service.push_frame(TTSSpeakFrame(filler))
 
     vad = await _take_vad()
+    caller_speech = CallerSpeechTurnStartStrategy(
+        min_words=conv.min_words_to_interrupt,
+        min_dbfs=LOUDNESS_DB_BY_FILTER.get(conv.background_voice_filter),
+        on_ignored=lambda text: log.event("ignored_background_speech", text=text,
+                                          loudest_dbfs=caller_speech.last_ignored_dbfs),
+    )
     mute = [MuteWhileEnding(session)]
     if conv.mute_during_greeting:
         # Phone lines echo the bot's own voice back; without this the bot hears itself as
@@ -372,20 +378,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
         user_params=LLMUserAggregatorParams(
             vad_analyzer=vad,
             user_mute_strategies=mute,
-            user_turn_strategies=UserTurnStrategies(
-                start=[CallerSpeechTurnStartStrategy(
-                    min_words=conv.min_words_to_interrupt,
-                    min_dbfs=LOUDNESS_DB_BY_FILTER.get(conv.background_voice_filter),
-                    on_ignored=lambda text: log.event("ignored_background_speech", text=text),
-                )],
-            ),
+            user_turn_strategies=UserTurnStrategies(start=[caller_speech]),
         ),
     )
 
     @user_aggregator.event_handler("on_user_turn_message_added")
     async def on_user_turn_message_added(aggregator, message):
         session.tool_called = session.nudged = False
-        log.event("caller_said", text=message.content)
+        log.event("caller_said", text=message.content, loudness_dbfs=caller_speech.last_turn_dbfs)
 
     @assistant_aggregator.event_handler("on_assistant_turn_stopped")
     async def on_assistant_turn_stopped(aggregator, message):

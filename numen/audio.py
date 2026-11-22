@@ -177,6 +177,11 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
         self._in_turn = False
         self._loud: deque[tuple[float, float]] = deque()  # (time, seconds) of loud frames
         self._caller_heard_at = -1e9
+        self._levels: deque[tuple[float, float]] = deque()  # (time, dBFS) of speech frames
+        # Loudness of the caller's most recent turn (median of their speech frames), for the
+        # call log: shows whether real callers sit well above the filter's threshold.
+        self.last_turn_dbfs: float | None = None
+        self.last_ignored_dbfs: float | None = None  # loudest recent frame when a transcript was ignored
 
     async def handle_user_turn_started(self):
         self._bot_speaking = False
@@ -199,7 +204,12 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
         if self._min_dbfs is None:
             return
         now = time.monotonic()
-        if frame_dbfs(frame.audio) >= self._min_dbfs:
+        db = frame_dbfs(frame.audio)
+        if db > -60:
+            self._levels.append((now, db))
+        while self._levels and now - self._levels[0][0] > 4:
+            self._levels.popleft()
+        if db >= self._min_dbfs:
             self._loud.append((now, len(frame.audio) / 2 / (frame.sample_rate or 8000)))
         while self._loud and now - self._loud[0][0] > LOUD_WINDOW_SECS:
             self._loud.popleft()
@@ -214,13 +224,16 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
             return  # the caller's turn is under way; their words all count
         if self._min_dbfs is not None and not self.caller_spoke_recently():
             if isinstance(frame, TranscriptionFrame) and frame.text.strip():
-                logger.debug(f"Ignoring background speech: {frame.text!r}")
+                self.last_ignored_dbfs = round(max((d for _, d in self._levels), default=-120.0), 1)
+                logger.debug(f"Ignoring background speech ({self.last_ignored_dbfs} dBFS): {frame.text!r}")
                 if self._on_ignored:
                     self._on_ignored(frame.text)
             await self.trigger_reset_aggregation()
             return
         min_words = self._min_words if self._bot_speaking else 1
         if count_spoken_words(frame.text) >= min_words:
+            loud = sorted(d for _, d in self._levels if d >= (self._min_dbfs or -60) - 6)
+            self.last_turn_dbfs = round(loud[len(loud) // 2], 1) if loud else None
             await self.report_user_turn_started()
         else:
             await self.trigger_reset_aggregation()
