@@ -162,6 +162,25 @@ def save_call(record: dict) -> None:
         c.execute(stmt)
 
 
+def note_transfer_outcome(call_sid: str, status: str, duration_s: float | None, answered: bool) -> bool:
+    """Record how a transfer's <Dial> ended (Twilio reports it after the agent has left the
+    call). An unanswered transfer replaces the end reason. False if the call isn't logged."""
+    with engine.begin() as c:
+        row = c.execute(select(calls.c.record).where(calls.c.call_sid == call_sid)).first()
+        if row is None:
+            return False
+        record = dict(row.record)
+        record["transfer_outcome"] = {"at": utcnow(), "dial_status": status, "answered": answered,
+                                      "dial_duration_s": duration_s}
+        values = {"record": record}
+        if not answered:
+            reason = f"transfer not answered ({status})"
+            record["call"] = {**record.get("call", {}), "end_reason": reason}
+            values["end_reason"] = reason
+        c.execute(calls.update().where(calls.c.call_sid == call_sid).values(**values))
+    return True
+
+
 def _call_row(r) -> dict:
     d = dict(r._mapping)
     d.pop("record", None)

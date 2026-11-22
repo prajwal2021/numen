@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from xml.sax.saxutils import escape
+from urllib.parse import quote
+from xml.sax.saxutils import escape, quoteattr
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -77,11 +78,35 @@ def _twilio() -> TwilioClient:
     return TwilioClient(s.twilio_account_sid, s.twilio_auth_token)
 
 
-async def transfer_call(call_sid: str, number: str) -> tuple[bool, str | None]:
+# How long the transfer line rings before Twilio gives up and comes back to us.
+TRANSFER_RING_SECONDS = 30
+
+
+def transfer_twiml(number: str, agent_id: str | None, base_url: str) -> str:
+    """<Dial> the number. With a public base URL, Twilio reports how the dial ended to
+    /transfer/done, so a busy or unanswered line gets a closing message instead of silence."""
+    base = base_url.strip().rstrip("/")
+    if base and not base.startswith("http"):
+        base = "https://" + base
+    if not base:
+        return f"<Response><Dial>{escape(number)}</Dial></Response>"
+    action = f"{base}/transfer/done?agent_id={quote(agent_id or '')}"
+    return (f'<Response><Dial timeout="{TRANSFER_RING_SECONDS}" action={quoteattr(action)} method="POST">'
+            f"{escape(number)}</Dial></Response>")
+
+
+def dial_answered(status: str | None) -> bool:
+    """Twilio's DialCallStatus: 'completed'/'answered' means someone picked up."""
+    return (status or "").lower() in ("completed", "answered")
+
+
+async def transfer_call(call_sid: str, number: str, agent_id: str | None = None) -> tuple[bool, str | None]:
     """Move the live Twilio call off the bot's media stream and dial `number`."""
-    twiml = f"<Response><Dial>{escape(number)}</Dial></Response>"
+    def run():
+        twiml = transfer_twiml(number, agent_id, get_settings().public_base_url or "")
+        _twilio().calls(call_sid).update(twiml=twiml)
     try:
-        await asyncio.to_thread(lambda: _twilio().calls(call_sid).update(twiml=twiml))
+        await asyncio.to_thread(run)
         logger.info(f"Transferred call {call_sid} to {number}")
         return True, None
     except Exception as e:

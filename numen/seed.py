@@ -83,6 +83,10 @@ def seed_if_empty() -> None:
                 "I'm sorry, I wasn't able to transfer your call. You can call back during our office "
                 "hours, Monday through Friday, 8 AM to 5 PM Central, or ask me something else."
             ),
+            transfer_unavailable_message=(
+                "I'm sorry, no one was available to take your call. Please call back during our "
+                "office hours, Monday through Friday, 8 AM to 5 PM Central. Goodbye."
+            ),
         ),
     )
     agent.llm.model = os.getenv("OPENAI_MODEL") or "gpt-4.1"

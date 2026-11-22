@@ -116,6 +116,10 @@ class RoutingConfig(BaseModel):
         "I'm sorry, I wasn't able to transfer your call. Please call back during office hours, "
         "or ask me something else."
     )
+    # Said after the transfer line was busy or didn't answer; the call then ends.
+    transfer_unavailable_message: str = (
+        "I'm sorry, no one was available to take your call. Please call back later. Goodbye."
+    )
 
     @field_validator("transfer_number", "after_hours_number", mode="before")
     @classmethod

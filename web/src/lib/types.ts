@@ -56,6 +56,7 @@ export interface Agent {
     transfer_message_after_hours: string;
     transfer_message_voicemail: string;
     transfer_failed_message: string;
+    transfer_unavailable_message: string;
   };
   conversation: {
     ring_seconds: number;

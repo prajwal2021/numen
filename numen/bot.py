@@ -113,7 +113,7 @@ class CallSession:
             return False
         self.transferring = True
         await self.say_and_wait(message, source="transfer_message")
-        ok, err = await routing.transfer_call(self.call_sid, number)
+        ok, err = await routing.transfer_call(self.call_sid, number, self.agent.id)
         self.log.transfer(number=number, reason=reason, office_open=routing.office_is_open(self.agent.routing),
                           success=ok, error=err)
         if ok:

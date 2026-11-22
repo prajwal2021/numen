@@ -30,11 +30,11 @@ from fastapi.responses import JSONResponse, Response  # noqa: E402
 from loguru import logger  # noqa: E402
 from pipecat.runner.types import WebSocketRunnerArguments  # noqa: E402
 
-from numen import accounts, api, api_users, audit, bot, store  # noqa: E402
+from numen import accounts, api, api_users, audit, bot, routing, store  # noqa: E402
 from numen.capacity import Decision, limiter  # noqa: E402
 from numen.auth import client_ip  # noqa: E402
 from numen.calllog import LOG_DIR  # noqa: E402
-from numen.models import Agent  # noqa: E402
+from numen.models import Agent, RoutingConfig  # noqa: E402
 from numen.seed import seed_if_empty  # noqa: E402
 
 PORT = int(os.getenv("PORT", "7860"))
@@ -262,6 +262,43 @@ async def incoming_hold(request: Request, ticket: str = ""):
         limiter.release(d.call_sid)
         return _turn_away("expired")
     return await _admit_twiml(request, agent, frm, to)
+
+
+# Seconds to wait before noting a transfer's outcome on the call record: the agent's own final
+# save of the record lands as the stream closes, and must not overwrite the note.
+TRANSFER_NOTE_DELAY_S = 15
+_background: set[asyncio.Task] = set()
+
+
+async def _note_transfer(call_sid: str, status: str, duration_s: float | None, answered: bool) -> None:
+    await asyncio.sleep(TRANSFER_NOTE_DELAY_S)
+    try:
+        await asyncio.to_thread(store.note_transfer_outcome, call_sid, status, duration_s, answered)
+    except Exception:
+        logger.exception(f"Saving the transfer outcome of {call_sid} failed")
+
+
+@app.post("/transfer/done")
+async def transfer_done(request: Request, agent_id: str = ""):
+    """Twilio comes back here when a transfer's <Dial> ends. Answered: the call is over.
+    Busy, no answer or failed: tell the caller instead of hanging up on them in silence."""
+    form = await request.form()
+    sid, status = form.get("CallSid") or "", form.get("DialCallStatus") or "unknown"
+    try:
+        duration = float(form.get("DialCallDuration") or 0) or None
+    except ValueError:
+        duration = None
+    answered = routing.dial_answered(status)
+    logger.info(f"Transfer of {sid} ended: {status} ({duration or 0:.0f}s)")
+    task = asyncio.create_task(_note_transfer(sid, status, duration, answered))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    if answered:
+        return _twiml("<Hangup/>")
+    await asyncio.to_thread(audit.record, "system", f"Transfer not answered ({status})", target=sid)
+    agent = await asyncio.to_thread(store.get, Agent, agent_id) if agent_id else None
+    message = (agent.routing if agent else RoutingConfig()).transfer_unavailable_message
+    return _twiml(f"<Say>{escape(message)}</Say><Hangup/>")
 
 
 @app.websocket("/ws")

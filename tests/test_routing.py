@@ -54,3 +54,22 @@ def test_after_hours_transfer_only_when_configured(monkeypatch):
     assert routing.after_hours_transfer(cfg(after_hours_action="transfer", after_hours_number="+18065550199"))
     monkeypatch.setattr(routing, "now_in", lambda _: at(2026, 11, 23, 10))
     assert not routing.after_hours_transfer(cfg(after_hours_action="transfer", after_hours_number="+18065550199"))
+
+
+def test_transfer_twiml_reports_back_when_base_url_set():
+    t = routing.transfer_twiml("+18065550100", "agt_1", "https://example.org/numen-voice/")
+    assert 'action="https://example.org/numen-voice/transfer/done?agent_id=agt_1"' in t
+    assert f'timeout="{routing.TRANSFER_RING_SECONDS}"' in t and ">+18065550100</Dial>" in t
+    # A bare host gets https://.
+    assert 'action="https://example.org/transfer/done?agent_id=agt_1"' in routing.transfer_twiml(
+        "+18065550100", "agt_1", "example.org")
+
+
+def test_transfer_twiml_without_base_url_is_a_plain_dial():
+    assert routing.transfer_twiml("+18065550100", "agt_1", "") == "<Response><Dial>+18065550100</Dial></Response>"
+
+
+def test_dial_answered():
+    assert routing.dial_answered("completed") and routing.dial_answered("answered")
+    for s in ("busy", "no-answer", "failed", "canceled", None, ""):
+        assert not routing.dial_answered(s)

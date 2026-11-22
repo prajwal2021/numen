@@ -172,6 +172,9 @@ export function RoutingTab({ draft, patch, errors }: { draft: Agent; patch: Patc
             <Field label="If the transfer fails">
               <Textarea rows={2} value={r.transfer_failed_message} onChange={(e) => patch("routing", { transfer_failed_message: e.target.value })} />
             </Field>
+            <Field label="If no one answers" hint="The transfer line was busy or rang out (30 s). The call then ends.">
+              <Textarea rows={2} value={r.transfer_unavailable_message} onChange={(e) => patch("routing", { transfer_unavailable_message: e.target.value })} />
+            </Field>
           </>
         )}
       </Section>
