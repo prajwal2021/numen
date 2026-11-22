@@ -44,7 +44,7 @@ from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.turns.user_mute import MuteUntilFirstBotCompleteUserMuteStrategy
 from pipecat.turns.user_mute.base_user_mute_strategy import BaseUserMuteStrategy
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_turn_strategies import UserTurnStrategies, default_user_turn_stop_strategies
 from pipecat.workers.runner import WorkerRunner
 
 from . import audit, kb_client, routing, store
@@ -256,28 +256,45 @@ def promises_lookup(text: str, filler: str) -> bool:
 # (it is stateful), so keep a few built ahead of time and top the pool up whenever a call
 # takes one. Each caller pops its own future: sharing one would let two simultaneous callers
 # drive the same analyzer. A burst bigger than the pool just builds extras in parallel threads.
+# The smart-turn end-of-turn model (an ONNX session, ~40 ms to load) gets the same treatment:
+# loaded on the event loop, ten calls starting together stalled every call's audio ~0.4 s.
 VAD_POOL_SIZE = int(os.getenv("VAD_POOL_SIZE", "3"))
-_spare_vads: list[asyncio.Future] = []
 
 
-def _build_vad() -> asyncio.Future:
-    return asyncio.ensure_future(asyncio.to_thread(SileroVADAnalyzer))
+class _Pool:
+    """Objects that are slow to build, built in threads ahead of time."""
+
+    def __init__(self, build, size: int):
+        self._build, self._size = build, size
+        self._spare: list[asyncio.Future] = []
+
+    def _new(self) -> asyncio.Future:
+        return asyncio.ensure_future(asyncio.to_thread(self._build))
+
+    def top_up(self) -> None:
+        while len(self._spare) < self._size:
+            self._spare.append(self._new())
+
+    async def ready(self) -> None:
+        self.top_up()
+        await asyncio.gather(*self._spare)
+
+    async def take(self):
+        fut = self._spare.pop(0) if self._spare else self._new()
+        self.top_up()
+        return await fut
 
 
-def _top_up_vads() -> None:
-    while len(_spare_vads) < VAD_POOL_SIZE:
-        _spare_vads.append(_build_vad())
+_vads = _Pool(SileroVADAnalyzer, VAD_POOL_SIZE)
+_turn_stops = _Pool(default_user_turn_stop_strategies, VAD_POOL_SIZE)
 
 
 async def prepare_spare_vad() -> None:
-    _top_up_vads()
-    await asyncio.gather(*_spare_vads)
+    await asyncio.gather(_vads.ready(), _turn_stops.ready())
 
 
 async def _take_vad() -> SileroVADAnalyzer:
-    fut = _spare_vads.pop(0) if _spare_vads else _build_vad()
-    _top_up_vads()
-    return await fut
+    return await _vads.take()
 
 
 def prewarm() -> None:
@@ -381,7 +398,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
             # A turn nothing else has ended (e.g. a short reply said over the agent, answered
             # once it stops) ends after this long without the caller speaking. Default 5 s.
             user_turn_stop_timeout=2.5,
-            user_turn_strategies=UserTurnStrategies(start=[caller_speech]),
+            user_turn_strategies=UserTurnStrategies(start=[caller_speech], stop=await _turn_stops.take()),
         ),
     )
 
