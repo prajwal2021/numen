@@ -11,7 +11,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 E164 = re.compile(r"^\+[1-9]\d{6,14}$")
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -191,13 +191,17 @@ class Agent(BaseModel):
 
 
 class KnowledgeBase(BaseModel):
-    """An external RAG service: POST {url}/answer {"question"} -> {"found", "text"}."""
+    """Where an agent's answers come from.
+
+    - "documents": files and text uploaded in Numen, searched and answered here (numen/kb_docs.py).
+    - "rag_service": an external service: POST {url}/answer {"question"} -> {"found", "text"}.
+    """
 
     id: str = Field(default_factory=lambda: new_id("kb"))
     name: str
     description: str = ""
-    type: Literal["rag_service"] = "rag_service"
-    url: str
+    type: Literal["documents", "rag_service"] = "rag_service"
+    url: str = ""
     api_key: str = ""
     timeout_s: float = Field(8, ge=1, le=30)
     fallback_message: str = (
@@ -207,10 +211,19 @@ class KnowledgeBase(BaseModel):
     created_at: str = Field(default_factory=utcnow)
     updated_at: str = Field(default_factory=utcnow)
 
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("is required")
+        return v.strip()
+
     @field_validator("url")
     @classmethod
-    def _url(cls, v: str) -> str:
+    def _url(cls, v: str, info: ValidationInfo) -> str:
         v = v.strip().rstrip("/")
+        if info.data.get("type") == "documents" and not v:
+            return ""
         if not re.match(r"^https?://", v):
             raise ValueError("must start with http:// or https://")
         return v

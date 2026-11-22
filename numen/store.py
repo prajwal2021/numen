@@ -13,8 +13,8 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 from sqlalchemy import (
-    Column, DateTime, Float, Integer, MetaData, String, Table, create_engine, delete as sa_delete,
-    func, insert, select, text,
+    Column, DateTime, Float, ForeignKey, Integer, LargeBinary, MetaData, String, Table, Text, create_engine,
+    delete as sa_delete, func, insert, select, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 
@@ -54,6 +54,32 @@ calls = Table(
     Column("end_reason", String),
     Column("summary", JSONB),
     Column("record", JSONB),
+)
+# Documents uploaded to a "documents" knowledge base, and their searchable passages.
+kb_documents = Table(
+    "kb_documents", meta,
+    Column("id", String, primary_key=True),
+    Column("kb_id", String, index=True, nullable=False),
+    Column("name", String, nullable=False),
+    Column("kind", String, nullable=False),  # pdf | docx | txt | md | html | text
+    Column("size_bytes", Integer),
+    Column("chars", Integer),
+    Column("chunks", Integer, server_default="0"),
+    Column("status", String, nullable=False),  # processing | ready | failed
+    Column("error", String),
+    Column("text", Text),
+    Column("created_by", String),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now()),
+)
+kb_chunks = Table(
+    "kb_chunks", meta,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("kb_id", String, index=True, nullable=False),
+    Column("doc_id", String, ForeignKey("kb_documents.id", ondelete="CASCADE"), index=True, nullable=False),
+    Column("ord", Integer, nullable=False),
+    Column("text", Text, nullable=False),
+    Column("embedding", LargeBinary, nullable=False),  # float32, normalised
 )
 _TABLES = {Agent: agents, KnowledgeBase: knowledge_bases, PhoneNumber: phone_numbers}
 meta.create_all(engine)

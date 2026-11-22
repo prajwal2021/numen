@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse, Response  # noqa: E402
 from loguru import logger  # noqa: E402
 from pipecat.runner.types import WebSocketRunnerArguments  # noqa: E402
 
-from numen import accounts, api, api_users, audit, bot, routing, store  # noqa: E402
+from numen import accounts, api, api_users, audit, bot, kb_docs, routing, store  # noqa: E402
 from numen.capacity import Decision, limiter  # noqa: E402
 from numen.auth import client_ip  # noqa: E402
 from numen.calllog import LOG_DIR  # noqa: E402
@@ -80,6 +80,9 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(bot.prewarm)
     await bot.prepare_spare_vad()
     audit.record("system", "Server started", port=PORT)
+    for doc_id in await asyncio.to_thread(kb_docs.pending_ids):
+        logger.info(f"Re-indexing knowledge-base document {doc_id} (interrupted by a restart)")
+        kb_docs.start_indexing(doc_id)
     cleanup = asyncio.create_task(_daily_cleanup())
     lag_watch = asyncio.create_task(_watch_loop_lag())
     logger.info("Ready for calls")
@@ -119,6 +122,10 @@ _ACTIONS = {
     ("DELETE", "/api/knowledge-bases/{kb_id}"): "Deleted knowledge base",
     ("POST", "/api/knowledge-bases/{kb_id}/health"): "Tested knowledge base connection",
     ("POST", "/api/knowledge-bases/{kb_id}/query"): "Ran a knowledge base test query",
+    ("POST", "/api/knowledge-bases/{kb_id}/documents"): "Uploaded knowledge base documents",
+    ("POST", "/api/knowledge-bases/{kb_id}/documents/text"): "Added text to a knowledge base",
+    ("POST", "/api/knowledge-bases/{kb_id}/documents/{doc_id}/retry"): "Re-indexed a knowledge base document",
+    ("DELETE", "/api/knowledge-bases/{kb_id}/documents/{doc_id}"): "Deleted a knowledge base document",
     ("POST", "/api/phone-numbers"): "Added phone number",
     ("PUT", "/api/phone-numbers/{pn_id}"): "Updated phone number",
     ("DELETE", "/api/phone-numbers/{pn_id}"): "Removed phone number",

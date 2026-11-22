@@ -12,11 +12,11 @@ import asyncio
 from typing import Any
 from zoneinfo import available_timezones
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response as RawResponse
 from pydantic import BaseModel, ValidationError
 
-from . import audit, auth, capacity, integrations, kb_client, routing, store, testchat
+from . import audit, auth, capacity, integrations, kb_client, kb_docs, routing, store, testchat
 from .models import Agent, KnowledgeBase, PhoneNumber, Settings, new_id, utcnow
 from .prompt import system_prompt
 
@@ -208,6 +208,8 @@ def _kb_out(kb: KnowledgeBase) -> dict:
     d["api_key_status"] = _mask(kb.api_key)
     d["used_by"] = [{"id": a.id, "name": a.name} for a in store.list_all(Agent)
                     if a.knowledge.knowledge_base_id == kb.id]
+    if kb.type == "documents":
+        d["stats"] = kb_docs.stats(kb.id)
     return d
 
 
@@ -231,7 +233,8 @@ def get_kb(kb_id: str):
 @router.put("/knowledge-bases/{kb_id}")
 def update_kb(kb_id: str, body: dict):
     old = store.get(KnowledgeBase, kb_id) or _404("knowledge base")
-    data = {k: v for k, v in body.items() if k not in ("api_key_status", "used_by")}
+    data = {k: v for k, v in body.items() if k not in ("api_key_status", "used_by", "stats")}
+    data["type"] = old.type  # a knowledge base keeps its type
     if not data.get("api_key"):  # blank means "keep the current key"
         data["api_key"] = old.api_key
     if data.pop("clear_api_key", False):
@@ -248,6 +251,7 @@ def delete_kb(kb_id: str):
     if users:
         raise HTTPException(409, f"Used by {', '.join(u['name'] for u in users)}. Detach it from those agents first.")
     store.delete(KnowledgeBase, kb_id)
+    kb_docs.delete_all(kb_id)
     return {"ok": True}
 
 
@@ -265,6 +269,95 @@ async def kb_query(kb_id: str, body: KBQuery):
     kb = await asyncio.to_thread(store.get, KnowledgeBase, kb_id) or _404("knowledge base")
     r = await kb_client.lookup(kb, body.question)
     return {**r.log_fields(), "spoken": r.text}
+
+
+# ---------------------------------------------------------------------------- KB documents
+
+
+def _documents_kb(kb_id: str) -> KnowledgeBase:
+    kb = store.get(KnowledgeBase, kb_id) or _404("knowledge base")
+    if kb.type != "documents":
+        raise HTTPException(400, "This knowledge base is an external service; it has no documents here.")
+    return kb
+
+
+def _user_email(request: Request) -> str | None:
+    return getattr(getattr(request.state, "user", None), "email", None)
+
+
+@router.get("/knowledge-bases/{kb_id}/documents")
+async def list_documents(kb_id: str):
+    await asyncio.to_thread(_documents_kb, kb_id)
+    return await asyncio.to_thread(kb_docs.list_documents, kb_id)
+
+
+@router.get("/knowledge-bases/{kb_id}/documents/{doc_id}")
+async def get_document(kb_id: str, doc_id: str):
+    return await asyncio.to_thread(kb_docs.get_document, kb_id, doc_id) or _404("document")
+
+
+MAX_FILES_PER_UPLOAD = 20
+
+
+@router.post("/knowledge-bases/{kb_id}/documents", status_code=201)
+async def upload_documents(kb_id: str, request: Request, files: list[UploadFile] = File(...)):
+    """Add files. Each is checked and saved, then indexed in the background; a file that can't
+    be read comes back with an error and doesn't stop the others."""
+    await asyncio.to_thread(_documents_kb, kb_id)
+    if len(files) > MAX_FILES_PER_UPLOAD:
+        raise HTTPException(400, f"Upload at most {MAX_FILES_PER_UPLOAD} files at a time.")
+    user = _user_email(request)
+    added, failed = [], []
+    for f in files:
+        name = f.filename or "file"
+        try:
+            data = await f.read(kb_docs.MAX_FILE_BYTES + 1)
+            kind, text = await asyncio.to_thread(kb_docs.extract_text, name, data)
+            doc = await asyncio.to_thread(kb_docs.add_document, kb_id, name, kind, text, len(data), user)
+            kb_docs.start_indexing(doc["id"])
+            added.append(doc)
+        except kb_docs.DocumentError as e:
+            failed.append({"name": name, "error": str(e)})
+    _note(request, kb_id, added=[d["name"] for d in added], failed=[f["name"] for f in failed])
+    if not added and failed:
+        raise HTTPException(422, [{"field": "files", "message": f"{x['name']}: {x['error']}"} for x in failed])
+    return {"added": added, "failed": failed}
+
+
+class TextDocument(BaseModel):
+    name: str
+    text: str
+
+
+@router.post("/knowledge-bases/{kb_id}/documents/text", status_code=201)
+async def add_text_document(kb_id: str, body: TextDocument, request: Request):
+    await asyncio.to_thread(_documents_kb, kb_id)
+    try:
+        doc = await asyncio.to_thread(kb_docs.add_document, kb_id, body.name, "text", body.text, None,
+                                      _user_email(request))
+    except kb_docs.DocumentError as e:
+        raise HTTPException(422, [{"field": "text", "message": str(e)}])
+    kb_docs.start_indexing(doc["id"])
+    _note(request, kb_id, document=doc["name"])
+    return doc
+
+
+@router.post("/knowledge-bases/{kb_id}/documents/{doc_id}/retry")
+async def retry_document(kb_id: str, doc_id: str):
+    doc = await asyncio.to_thread(kb_docs.get_document, kb_id, doc_id) or _404("document")
+    if doc["status"] == "processing":
+        raise HTTPException(409, "Already being indexed.")
+    await asyncio.to_thread(kb_docs._set, doc_id, status="processing", error=None)
+    kb_docs.start_indexing(doc_id)
+    return {"ok": True}
+
+
+@router.delete("/knowledge-bases/{kb_id}/documents/{doc_id}")
+async def delete_document(kb_id: str, doc_id: str, request: Request):
+    doc = await asyncio.to_thread(kb_docs.get_document, kb_id, doc_id) or _404("document")
+    await asyncio.to_thread(kb_docs.delete_document, kb_id, doc_id)
+    _note(request, kb_id, document=doc["name"])
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------- phone numbers

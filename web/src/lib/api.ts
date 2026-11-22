@@ -16,10 +16,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const form = typeof FormData !== "undefined" && body instanceof FormData;
   const res = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    // FormData sets its own multipart Content-Type (with the boundary).
+    headers: body !== undefined && !form ? { "Content-Type": "application/json" } : undefined,
+    body: body === undefined ? undefined : form ? (body as FormData) : JSON.stringify(body),
     credentials: "same-origin",
   });
   if (res.status === 401 && typeof window !== "undefined" && !path.startsWith("/auth")) {
@@ -46,6 +48,7 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body ?? {}),
   put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
+  upload: <T>(path: string, form: FormData) => request<T>("POST", path, form),
 };
 
 export function errorMessage(e: unknown): string {

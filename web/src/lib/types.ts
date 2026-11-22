@@ -83,7 +83,7 @@ export interface KnowledgeBase {
   id: string;
   name: string;
   description: string;
-  type: "rag_service";
+  type: "documents" | "rag_service";
   url: string;
   api_key: string;
   timeout_s: number;
@@ -92,6 +92,31 @@ export interface KnowledgeBase {
   updated_at: string;
   api_key_status?: SecretStatus;
   used_by?: { id: string; name: string }[];
+  stats?: KBStats;
+}
+
+export interface KBStats {
+  documents: number;
+  passages: number;
+  processing: number;
+  failed: number;
+  ready: number;
+}
+
+export interface KBDocument {
+  id: string;
+  kb_id: string;
+  name: string;
+  kind: "pdf" | "docx" | "txt" | "md" | "html" | "text";
+  size_bytes: number | null;
+  chars: number;
+  chunks: number;
+  status: "processing" | "ready" | "failed";
+  error: string | null;
+  text?: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface KBLookup {

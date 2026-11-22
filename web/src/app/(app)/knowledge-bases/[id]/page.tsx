@@ -4,19 +4,20 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, ArrowLeft, BookOpen, Bot, Link2, Loader2, Search, Send, Trash2, Users } from "lucide-react";
+import { Activity, ArrowLeft, BookOpen, Bot, FileText, Link2, Loader2, Search, Send, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LookupResult } from "@/components/agent/knowledge-tab";
 import { Page, PageHeader, Pill, Section } from "@/components/common";
+import { KBDocuments } from "@/components/kb-documents";
 import { KBForm, type KBDraft } from "@/components/kb-form";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { useIsAdmin } from "@/lib/auth";
 import type { KBLookup, KnowledgeBase } from "@/lib/types";
 
-const SAMPLES = ["Is there a free course?", "How much do the courses cost?", "What's two plus two?"];
+const SAMPLES = ["What are your hours?", "How much does it cost?", "What's two plus two?"];
 
 export default function KnowledgeBasePage() {
   const { id } = useParams<{ id: string }>();
@@ -29,7 +30,10 @@ export default function KnowledgeBasePage() {
   const [question, setQuestion] = useState("");
   const [history, setHistory] = useState<KBLookup[]>([]);
 
-  const draft: KBDraft | null = edits ?? (kb ? { ...kb, api_key: "" } : null);
+  const toDraft = (k: KnowledgeBase): KBDraft => ({
+    name: k.name, description: k.description, type: k.type, url: k.url, api_key: "", timeout_s: k.timeout_s, fallback_message: k.fallback_message,
+  });
+  const draft: KBDraft | null = edits ?? (kb ? toDraft(kb) : null);
 
   const save = useMutation({
     mutationFn: () => api.put<KnowledgeBase>(`/knowledge-bases/${id}`, draft),
@@ -65,7 +69,8 @@ export default function KnowledgeBasePage() {
 
   if (isError) return <div className="p-8 text-sm text-destructive">{errorMessage(error)}</div>;
   if (!kb || !draft) return <Page><Skeleton className="h-96 rounded-xl" /></Page>;
-  const dirty = JSON.stringify(draft) !== JSON.stringify({ ...kb, api_key: "" });
+  const dirty = JSON.stringify(draft) !== JSON.stringify(toDraft(kb));
+  const docs = kb.type === "documents";
   const ask = (q: string) => q.trim() && query.mutate(q.trim());
 
   return (
@@ -77,12 +82,14 @@ export default function KnowledgeBasePage() {
         icon={BookOpen}
         tone="sky"
         title={kb.name}
-        description={kb.description || "RAG service"}
+        description={kb.description || (docs ? "Documents" : "RAG service")}
         actions={
           <>
+            {!docs && (
             <Button variant="outline" onClick={() => health.mutate()} disabled={health.isPending}>
               {health.isPending ? <Loader2 className="animate-spin" /> : <Activity />} Test connection
             </Button>
+            )}
             <Button onClick={() => save.mutate()} disabled={!dirty || save.isPending}>
               {save.isPending && <Loader2 className="animate-spin" />} Save
             </Button>
@@ -100,7 +107,12 @@ export default function KnowledgeBasePage() {
       )}
       <div className="grid gap-5 lg:grid-cols-5">
         <div className="space-y-5 lg:col-span-3">
-          <Section title="Connection" icon={Link2} tone="sky">
+          {docs && (
+            <Section title="Documents" description="The agent answers only from these." icon={FileText} tone="sky">
+              <KBDocuments kbId={id} />
+            </Section>
+          )}
+          <Section title={docs ? "Settings" : "Connection"} icon={Link2} tone="sky">
             <KBForm
               value={draft}
               onChange={setEdits}

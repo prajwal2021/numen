@@ -9,8 +9,22 @@
     {
       "name": "numen-web-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "web", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "web",
+        "run",
+        "dev"
+      ],
       "port": 3000
+    },
+    {
+      "name": "numen-backend",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "server.py"
+      ],
+      "port": 7860
     }
   ]
 }

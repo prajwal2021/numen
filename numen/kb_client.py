@@ -1,4 +1,5 @@
-"""Client for knowledge bases of type "rag_service".
+"""Knowledge-base lookups. "documents" knowledge bases are answered in Numen (kb_docs.py);
+"rag_service" ones by an external service:
 
 Contract: POST {url}/answer {"question": "..."} -> {"found": bool, "text": str}, with a bearer
 key. One request per question, no retries on 4xx, back off for Retry-After (default 60 s)
@@ -7,12 +8,14 @@ on 429. The key is never logged; question and answer text are recorded in the ca
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import asdict, dataclass, field
 
 import httpx
 from loguru import logger
 
+from . import kb_docs
 from .models import KnowledgeBase
 
 MAX_QUESTION_CHARS = 500
@@ -76,6 +79,13 @@ def _state(kb: KnowledgeBase) -> _State:
 def config_snapshot(kb: KnowledgeBase | None) -> dict:
     if kb is None:
         return {"knowledge_base": None}
+    if kb.type == "documents":
+        return {
+            "knowledge_base_id": kb.id, "name": kb.name, "type": kb.type,
+            "embedding_model": kb_docs.EMBEDDING_MODEL, "answer_model": kb_docs.ANSWER_MODEL,
+            "passages_per_question": kb_docs.RETRIEVAL_LIMIT, "timeout_s": kb.timeout_s,
+            "max_question_chars": MAX_QUESTION_CHARS, "fallback_message": kb.fallback_message,
+        }
     st = _states.get(kb.id)
     return {
         "knowledge_base_id": kb.id,
@@ -98,12 +108,17 @@ async def warm(kb: KnowledgeBase | None) -> None:
     if kb is None:
         return
     try:
+        if kb.type == "documents":
+            await kb_docs.warm(kb)
+            return
         await _state(kb).client.get("/health")
     except Exception:
         pass
 
 
 async def health(kb: KnowledgeBase) -> dict:
+    if kb.type == "documents":
+        return await kb_docs.health(kb)
     start = time.monotonic()
     try:
         r = await _state(kb).client.get("/health")
@@ -121,6 +136,8 @@ async def lookup(kb: KnowledgeBase | None, question: str, fallback: str | None =
         return Lookup(question=q, fallback=fallback or "I'm sorry, I don't have an answer for that.",
                       result="no_kb", error="no knowledge base attached")
     res = Lookup(question=q, fallback=kb.fallback_message, knowledge_base_id=kb.id, knowledge_base_name=kb.name)
+    if kb.type == "documents":
+        return await _lookup_documents(kb, q, res)
     st = _state(kb)
     if time.monotonic() < st.backoff_until:
         res.result, res.error = "rate_limited", "backing off after 429"
@@ -148,6 +165,24 @@ async def lookup(kb: KnowledgeBase | None, question: str, fallback: str | None =
         res.result, res.error = "timeout", type(e).__name__
     except Exception as e:  # never let a lookup crash the call
         res.result, res.error = "error", f"{type(e).__name__}: {e}"
+    res.latency_ms = round((time.monotonic() - start) * 1000)
+    logger.info(f"KB {kb.name}: {res.result} in {res.latency_ms} ms")
+    return res
+
+
+async def _lookup_documents(kb: KnowledgeBase, q: str, res: Lookup) -> Lookup:
+    start = time.monotonic()
+    try:
+        found, text = await asyncio.wait_for(kb_docs.answer(kb, q), kb.timeout_s)
+        if found and text:
+            res.found, res.answer, res.result = True, text, "answer"
+        else:
+            res.result = "no_answer"
+    except asyncio.TimeoutError:
+        res.result, res.error = "timeout", "TimeoutError"
+    except Exception as e:  # never let a lookup crash the call
+        res.result, res.error = "error", f"{type(e).__name__}: {str(e)[:200]}"
+        logger.warning(f"KB {kb.name}: lookup failed: {res.error}")
     res.latency_ms = round((time.monotonic() - start) * 1000)
     logger.info(f"KB {kb.name}: {res.result} in {res.latency_ms} ms")
     return res

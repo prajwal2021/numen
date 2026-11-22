@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, KeyRound, Plus } from "lucide-react";
+import { BookOpen, FileText, KeyRound, Link2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -13,6 +13,7 @@ import { EmptyState, IconChip, Page, PageHeader, Pill } from "@/components/commo
 import { EMPTY_KB, KBForm, type KBDraft } from "@/components/kb-form";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { KnowledgeBase } from "@/lib/types";
 
 export default function KnowledgeBasesPage() {
@@ -44,7 +45,7 @@ export default function KnowledgeBasesPage() {
         icon={BookOpen}
         tone="sky"
         title="Knowledge Base"
-        description="RAG services your agents answer from."
+        description="What your agents answer from: your own documents, or an external RAG service."
         actions={
           <Button onClick={() => setOpen(true)}>
             <Plus /> Add knowledge base
@@ -58,7 +59,7 @@ export default function KnowledgeBasesPage() {
           icon={BookOpen}
           tone="sky"
           title="No knowledge bases"
-          description="Connect a RAG service so agents can answer from your documents."
+          description="Upload your documents (PDF, Word, text) so agents can answer callers from them."
           action={
             <Button onClick={() => setOpen(true)}>
               <Plus /> Add knowledge base
@@ -74,7 +75,7 @@ export default function KnowledgeBasesPage() {
                   <IconChip icon={BookOpen} tone="sky" />
                   <div>
                     <div className="text-sm font-semibold">{kb.name}</div>
-                    <div className="text-xs text-muted-foreground">{kb.description || "RAG service"}</div>
+                    <div className="text-xs text-muted-foreground">{kb.description || (kb.type === "documents" ? "Documents" : "RAG service")}</div>
                   </div>
                 </div>
                 {kb.api_key_status?.set && (
@@ -83,7 +84,15 @@ export default function KnowledgeBasesPage() {
                   </Pill>
                 )}
               </div>
-              <div className="mt-4 truncate rounded-md bg-muted/50 px-2.5 py-1.5 font-mono text-[11.5px] text-muted-foreground">{kb.url}</div>
+              {kb.type === "documents" ? (
+                <div className="mt-4 truncate rounded-md bg-muted/50 px-2.5 py-1.5 text-[12px] text-muted-foreground">
+                  {kb.stats?.documents ? `${kb.stats.documents} document${kb.stats.documents > 1 ? "s" : ""} · ${kb.stats.passages} passage${kb.stats.passages === 1 ? "" : "s"}` : "No documents yet"}
+                  {kb.stats?.processing ? ` · ${kb.stats.processing} indexing` : ""}
+                  {kb.stats?.failed ? ` · ${kb.stats.failed} failed` : ""}
+                </div>
+              ) : (
+                <div className="mt-4 truncate rounded-md bg-muted/50 px-2.5 py-1.5 font-mono text-[11.5px] text-muted-foreground">{kb.url}</div>
+              )}
               <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
                 <span>
                   {kb.used_by?.length ? `Used by ${kb.used_by.map((a) => a.name).join(", ")}` : "Not in use"}
@@ -99,14 +108,39 @@ export default function KnowledgeBasesPage() {
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Add a knowledge base</DialogTitle>
-            <DialogDescription>Connect a RAG service. You can test it right after.</DialogDescription>
+            <DialogDescription>
+              {draft.type === "documents" ? "Name it, then add your documents on the next page." : "Connect a RAG service. You can test it right after."}
+            </DialogDescription>
           </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            {(
+              [
+                ["documents", FileText, "Upload documents", "PDF, Word or text files, or pasted text. No setup needed."],
+                ["rag_service", Link2, "External service", "A RAG service you already run (POST /answer)."],
+              ] as const
+            ).map(([type, Icon, title, text]) => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => setDraft({ ...draft, type })}
+                className={cn(
+                  "rounded-lg border p-3 text-left transition-colors",
+                  draft.type === type ? "border-foreground/50 bg-muted" : "hover:bg-muted/50",
+                )}
+              >
+                <div className="flex items-center gap-2 text-[13px] font-medium">
+                  <Icon className="size-4" /> {title}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">{text}</div>
+              </button>
+            ))}
+          </div>
           <KBForm value={draft} onChange={setDraft} errors={errors} />
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={() => create.mutate()} disabled={!draft.name.trim() || !draft.url.trim() || create.isPending}>
+            <Button onClick={() => create.mutate()} disabled={!draft.name.trim() || (draft.type === "rag_service" && !draft.url.trim()) || create.isPending}>
               {create.isPending ? "Adding…" : "Add knowledge base"}
             </Button>
           </DialogFooter>

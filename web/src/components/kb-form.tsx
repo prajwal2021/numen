@@ -5,10 +5,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/common";
 import type { KnowledgeBase } from "@/lib/types";
 
-export type KBDraft = Pick<KnowledgeBase, "name" | "description" | "url" | "api_key" | "timeout_s" | "fallback_message">;
+export type KBDraft = Pick<KnowledgeBase, "name" | "description" | "type" | "url" | "api_key" | "timeout_s" | "fallback_message">;
 
 export const EMPTY_KB: KBDraft = {
   name: "",
+  type: "documents",
   description: "",
   url: "",
   api_key: "",
@@ -31,12 +32,14 @@ export function KBForm({
   const set = (p: Partial<KBDraft>) => onChange({ ...value, ...p });
   return (
     <div className="space-y-4">
-      <Field label="Name" error={errors.name}>
-        <Input value={value.name} placeholder="e.g. Admissions KB" onChange={(e) => set({ name: e.target.value })} />
+      <Field label="Name" error={errors.name} hint={value.type === "documents" ? "Your organization or office. Answers are given on its behalf." : undefined}>
+        <Input value={value.name} placeholder="e.g. Admissions office" onChange={(e) => set({ name: e.target.value })} />
       </Field>
       <Field label="Description">
         <Input value={value.description} placeholder="What it covers" onChange={(e) => set({ description: e.target.value })} />
       </Field>
+      {value.type === "rag_service" && (
+      <>
       <Field
         label="Service URL"
         error={errors.url}
@@ -54,6 +57,8 @@ export function KBForm({
           <Input type="number" min={1} max={30} value={value.timeout_s} onChange={(e) => set({ timeout_s: Number(e.target.value) })} />
         </Field>
       </div>
+      </>
+      )}
       <Field label="Fallback message" hint="Spoken when there's no answer or the lookup fails.">
         <Textarea rows={3} value={value.fallback_message} onChange={(e) => set({ fallback_message: e.target.value })} />
       </Field>
