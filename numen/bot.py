@@ -378,6 +378,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, agent:
         user_params=LLMUserAggregatorParams(
             vad_analyzer=vad,
             user_mute_strategies=mute,
+            # A turn nothing else has ended (e.g. a short reply said over the agent, answered
+            # once it stops) ends after this long without the caller speaking. Default 5 s.
+            user_turn_stop_timeout=2.5,
             user_turn_strategies=UserTurnStrategies(start=[caller_speech]),
         ),
     )

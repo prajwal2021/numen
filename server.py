@@ -43,6 +43,24 @@ PORT = int(os.getenv("PORT", "7860"))
 logger.add(LOG_DIR / "server.log", level="INFO", rotation="00:00", retention="30 days", enqueue=True)
 
 
+# Event-loop lag: every live call's audio runs on this one loop, so lag is stutter. Sampled
+# every 100 ms; /health reports the worst in the last minute.
+_lag = {"max_ms": 0.0, "window_max_ms": 0.0, "window_start": 0.0}
+
+
+async def _watch_loop_lag():
+    while True:
+        t = time.monotonic()
+        await asyncio.sleep(0.1)
+        lag = (time.monotonic() - t - 0.1) * 1000
+        now = time.monotonic()
+        if now - _lag["window_start"] > 60:
+            _lag["max_ms"], _lag["window_max_ms"], _lag["window_start"] = _lag["window_max_ms"], 0.0, now
+        _lag["window_max_ms"] = max(_lag["window_max_ms"], lag)
+        if lag > 250:
+            logger.warning(f"Event loop lagged {lag:.0f} ms (live calls: {limiter.live})")
+
+
 async def _daily_cleanup():
     while True:
         try:
@@ -63,9 +81,11 @@ async def lifespan(app: FastAPI):
     await bot.prepare_spare_vad()
     audit.record("system", "Server started", port=PORT)
     cleanup = asyncio.create_task(_daily_cleanup())
+    lag_watch = asyncio.create_task(_watch_loop_lag())
     logger.info("Ready for calls")
     yield
     cleanup.cancel()
+    lag_watch.cancel()
 
 
 app = FastAPI(title="Numen voice agents", lifespan=lifespan)
@@ -152,7 +172,8 @@ async def health():
     """Liveness plus load, for the load balancer / uptime monitor (counts only, no call data)."""
     snap = limiter.snapshot()
     return {"status": "ok", "active_calls": snap["active_calls"], "max_calls": snap["max_calls"],
-            "queued_callers": snap["queued_callers"], "draining": snap["draining"]}
+            "queued_callers": snap["queued_callers"], "draining": snap["draining"],
+            "loop_lag_ms_max_1m": round(max(_lag["max_ms"], _lag["window_max_ms"]))}
 
 
 # Where a caller goes when the line is full and they can't wait: a human line if configured.

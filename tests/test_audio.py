@@ -286,3 +286,37 @@ def test_acknowledgement_mid_answer_is_dropped():
         await s.process_frame(BotStoppedSpeakingFrame())
         assert s.started == 0 and s.resets == 1
     run(go())
+
+
+def test_caller_voice_starts_turn_before_the_transcript():
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame
+
+    async def go():
+        s = Recorder(min_words=3)
+        await s.process_frame(VADUserStartedSpeakingFrame())
+        await s.feed(voice(-22, 200))
+        assert s.started >= 1
+    run(go())
+
+
+def test_background_voice_does_not_start_turn_on_vad():
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame
+
+    async def go():
+        s = Recorder(min_words=3)
+        await s.process_frame(VADUserStartedSpeakingFrame())
+        await s.feed(voice(-46, 2000))
+        assert s.started == 0
+    run(go())
+
+
+def test_vad_does_not_interrupt_the_agent():
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame
+
+    async def go():
+        s = Recorder(min_words=3)
+        await s.process_frame(BotStartedSpeakingFrame())
+        await s.process_frame(VADUserStartedSpeakingFrame())
+        await s.feed(voice(-22, 500))
+        assert s.started == 0
+    run(go())

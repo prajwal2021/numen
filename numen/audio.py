@@ -21,6 +21,8 @@ from pipecat.frames.frames import (
     MixerEnableFrame,
     MixerUpdateSettingsFrame,
     TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.turns.user_start.base_user_turn_start_strategy import BaseUserTurnStartStrategy
 from pipecat.utils.text.word_count import count_spoken_words
@@ -202,6 +204,7 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
         self.last_turn_dbfs: float | None = None
         self.last_ignored_dbfs: float | None = None  # loudest recent frame when a transcript was ignored
         self._held_at: float | None = None  # a short reply said over the agent, waiting for it to stop
+        self._vad_speaking = False
 
     async def handle_user_turn_started(self):
         self._bot_speaking = False
@@ -214,6 +217,12 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
     async def process_frame(self, frame: Frame):
         if isinstance(frame, InputAudioRawFrame):
             self._measure(frame)
+            await self._maybe_start_on_voice()
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._vad_speaking = True
+            await self._maybe_start_on_voice()
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._vad_speaking = False
         elif isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
@@ -243,6 +252,18 @@ class CallerSpeechTurnStartStrategy(BaseUserTurnStartStrategy):
             self._loud.popleft()
         if sum(d for _, d in self._loud) * 1000 >= LOUD_MS_NEEDED:
             self._caller_heard_at = now
+
+    async def _maybe_start_on_voice(self) -> None:
+        """While the agent is quiet, the caller talking (at caller loudness) starts their turn
+        right away, as Pipecat's VAD start does. Waiting for the transcript instead can start
+        the turn after they've already stopped (transcripts lag under load), and then nothing
+        ends it but the stop timeout."""
+        if (self._vad_speaking and not self._in_turn and not self._bot_speaking
+                and (self._min_dbfs is None or self._loud_now())):
+            await self.report_user_turn_started()
+
+    def _loud_now(self) -> bool:
+        return time.monotonic() - self._caller_heard_at < 0.5
 
     def caller_spoke_recently(self) -> bool:
         return time.monotonic() - self._caller_heard_at < TRANSCRIPT_GRACE_SECS
