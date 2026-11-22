@@ -9,7 +9,7 @@ import type { CallRow } from "@/lib/types";
 
 export function EndReason({ reason }: { reason: string | null }) {
   const label = endReasonLabel(reason);
-  const tone = !reason ? "blue" : reason.startsWith("transferred") ? "amber" : reason === "caller hung up" ? "green" : "red";
+  const tone = !reason ? "blue" : reason.startsWith("transferred") ? "amber" : reason === "caller hung up" || reason === "agent ended the call" ? "green" : "red";
   return <Pill tone={tone}>{label}</Pill>;
 }
 

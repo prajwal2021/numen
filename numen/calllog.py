@@ -138,6 +138,7 @@ class CallLog:
             "kb_avg_latency_ms": round(sum(latencies) / len(latencies)) if latencies else None,
             "kb_max_latency_ms": max(latencies) if latencies else None,
             "transfers": len(self.record["transfers"]),
+            "safety_alerts": sum(1 for e in timeline if e["type"] == "safety_help"),
             "errors": len(self.record["errors"]),
         }
         logger.info(f"[call] ended ({call['end_reason']}) after {call['duration_s']}s: {self.record['summary']}")

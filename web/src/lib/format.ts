@@ -33,7 +33,7 @@ export function pct(n: number, d: number): string {
 export function endReasonLabel(reason: string | null | undefined): string {
   if (!reason) return "In progress";
   if (reason.startsWith("transferred")) return "Transferred";
-  if (reason === "caller hung up") return "Completed";
+  if (reason === "caller hung up" || reason === "agent ended the call") return "Completed";
   if (reason === "no agent assigned") return "No agent";
   return reason.charAt(0).toUpperCase() + reason.slice(1);
 }

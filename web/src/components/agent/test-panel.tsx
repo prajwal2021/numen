@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRightLeft, ArrowUp, BookOpen, Loader2, RotateCcw, Wrench } from "lucide-react";
+import { ArrowRightLeft, ArrowUp, BookOpen, Loader2, PhoneOff, RotateCcw, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,9 @@ const SOURCE_LABEL: Record<string, string> = {
   kb_fallback: "Fallback",
   lookup_filler: "Filler",
   transfer_message: "Transfer",
+  goodbye: "Goodbye",
+  safety_emergency: "Safety · emergency",
+  safety_crisis: "Safety · crisis support",
   llm: "LLM",
 };
 
@@ -61,6 +64,13 @@ function EventView({ e }: { e: TestEvent }) {
       <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
         <ArrowRightLeft className="size-3.5" />
         Would transfer to {formatPhone(e.number)} ({e.office_open ? "office open" : "office closed"}). Simulated: nothing is dialed.
+      </div>
+    );
+  if (e.type === "end_call")
+    return (
+      <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+        <PhoneOff className="size-3.5" />
+        The agent hangs up here. Start a new test to keep going.
       </div>
     );
   return null;

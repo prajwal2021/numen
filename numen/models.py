@@ -62,6 +62,8 @@ class KnowledgeConfig(BaseModel):
     route_all_questions: bool = True
     lookup_filler: str = "Let me check on that."
     follow_up: str = "Would you like additional information on this topic?"
+    # A faint keyboard-typing sound under the line while a lookup runs.
+    typing_sound: bool = True
 
 
 class DaySchedule(BaseModel):
@@ -132,6 +134,37 @@ class ConversationConfig(BaseModel):
     ring_seconds: float = Field(4, ge=0, le=10)
     mute_during_greeting: bool = True
     min_words_to_interrupt: int = Field(3, ge=1, le=10)
+    # How loud and clear speech must be to count as the caller talking. Background voices
+    # (a TV, people nearby) are quieter than the caller's; "strong" ignores more of them but
+    # needs callers to speak up, "off" reacts to any speech the line picks up.
+    background_voice_filter: Literal["off", "standard", "strong"] = "standard"
+    # The language callers speak. "auto" detects it per phrase, which can mishear English on a
+    # phone line as another language; pick it only with a multilingual voice model.
+    caller_language: Literal["en", "es", "auto"] = "en"
+    # Names and terms the speech-to-text should listen for (program names, acronyms).
+    keyterms: list[str] = Field(default_factory=list, max_length=50)
+    # The agent hangs up when the caller is done ("thank you", "that's all", "bye").
+    end_call_enabled: bool = True
+    goodbye_message: str = "You're welcome. Thank you for calling, and have a great day. Goodbye."
+
+
+class SafetyConfig(BaseModel):
+    """What the agent says when a caller is in danger or crisis. Spoken word for word (never
+    LLM-written), so the numbers are always exactly these."""
+
+    enabled: bool = True
+    # Someone is hurt, in danger, or needs urgent medical help right now.
+    emergency_message: str = (
+        "This sounds like an emergency. If you or someone else is in danger or needs urgent "
+        "medical help, please hang up and call 9 1 1 right now."
+    )
+    # Thoughts of suicide or self-harm, or severe emotional distress.
+    crisis_message: str = (
+        "I'm really sorry you're going through this, and I'm glad you said something. You don't "
+        "have to face it alone. You can call or text 9 8 8, the Suicide and Crisis Lifeline, any "
+        "time, day or night, to talk with someone right now. If you are in immediate danger, "
+        "please call 9 1 1."
+    )
 
 
 class Agent(BaseModel):
@@ -145,6 +178,7 @@ class Agent(BaseModel):
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+    safety: SafetyConfig = Field(default_factory=SafetyConfig)
     created_at: str = Field(default_factory=utcnow)
     updated_at: str = Field(default_factory=utcnow)
 

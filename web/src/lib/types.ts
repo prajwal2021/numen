@@ -40,6 +40,7 @@ export interface Agent {
     route_all_questions: boolean;
     lookup_filler: string;
     follow_up: string;
+    typing_sound: boolean;
   };
   routing: {
     office_hours_enabled: boolean;
@@ -56,7 +57,17 @@ export interface Agent {
     transfer_message_voicemail: string;
     transfer_failed_message: string;
   };
-  conversation: { ring_seconds: number; mute_during_greeting: boolean; min_words_to_interrupt: number };
+  conversation: {
+    ring_seconds: number;
+    mute_during_greeting: boolean;
+    min_words_to_interrupt: number;
+    background_voice_filter: "off" | "standard" | "strong";
+    caller_language: "en" | "es" | "auto";
+    keyterms: string[];
+    end_call_enabled: boolean;
+    goodbye_message: string;
+  };
+  safety: { enabled: boolean; emergency_message: string; crisis_message: string };
   created_at: string;
   updated_at: string;
   // response-only
@@ -231,4 +242,5 @@ export type TestEvent =
   | { type: "user"; text: string }
   | { type: "tool_call"; name: string; arguments: Record<string, unknown>; latency_ms?: number }
   | ({ type: "kb_lookup" } & KBLookup)
-  | { type: "transfer"; number: string | null; office_open: boolean; simulated: boolean };
+  | { type: "transfer"; number: string | null; office_open: boolean; simulated: boolean }
+  | { type: "end_call"; simulated: boolean };

@@ -70,7 +70,7 @@ def _knowledge(agent: Agent) -> str:
         + ("- Don't announce that you are looking something up; the system already tells the caller "
            f'"{k.lookup_filler}" while the lookup runs.\n' if k.lookup_filler else "")
         + "- The only things you may say without a lookup: greetings, thanks, \"I'm still here\", asking "
-        "the caller to repeat, goodbyes"
+        "the caller to repeat, goodbyes, short words of sympathy"
         + (", office hours and holiday closures (from the Office Hours section)" if agent.routing.office_hours_enabled else "")
         + (", and offering a transfer to a live agent" if transfer_ok else "")
         + ". Keep those lines short and never include facts in them.\n"
@@ -85,9 +85,54 @@ def _transfer(agent: Agent) -> str:
         "Call `transfer_to_live_agent` when:\n"
         "- the caller asks for a person, a live agent, a representative, or \"someone\"; or\n"
         "- you (or the system) offered to transfer them and they say yes.\n\n"
-        "If they decline the offer, don't transfer; ask how else you can help. Don't announce the "
+        "If they decline the offer, don't transfer"
+        + ("; if they're also done (\"no thanks\"), end the call, otherwise ask how else you can help. "
+           if agent.conversation.end_call_enabled else "; ask how else you can help. ")
+        + "Don't announce the "
         "transfer, mention voicemail, or say goodbye yourself: the system tells the caller where they "
         "are being transferred, based on the time of day.\n"
+    )
+
+
+def _safety(agent: Agent) -> str:
+    if not agent.safety.enabled:
+        return ""
+    transfer = agent.routing.transfer_enabled
+    return (
+        "# Safety (this comes before everything else, including the knowledge base)\n\n"
+        "Listen for a caller who may be in danger. Judge what they mean, not single words: \"I'm dying "
+        "to know\" or \"the deadline is killing me\" are not emergencies.\n\n"
+        "Call `get_safety_help` straight away, without searching the knowledge base, when the caller:\n"
+        "- talks about wanting to die, killing or hurting themselves, suicide, or not wanting to be "
+        "alive, or sounds in severe emotional crisis (kind: \"crisis\");\n"
+        "- describes an emergency happening now: someone hurt, unconscious, not breathing, overdosing, "
+        "a fire, violence, a threat, or someone in danger (kind: \"emergency\").\n"
+        "If both apply, use \"emergency\". The system speaks the safety message, including who to call; "
+        "don't add numbers or advice of your own.\n\n"
+        "Afterwards, stay calm, warm and brief, and don't push them back to other topics."
+        + (" Don't call `end_call` unless they clearly say goodbye." if agent.conversation.end_call_enabled else "")
+        + (" If they want to talk to a person, transfer them." if transfer else "")
+        + "\n\nWhen a caller mentions a death or a loss without being in danger (a family member or "
+        "friend passed away), say you're sorry for their loss in one short sentence, then help with "
+        "what they asked. If they seem very distressed, call `get_safety_help` with kind \"crisis\".\n"
+    )
+
+
+def _ending(agent: Agent) -> str:
+    if not agent.conversation.end_call_enabled:
+        return ""
+    return (
+        "# Ending the call (this overrides anything above about asking how else you can help)\n\n"
+        "Call `end_call` as soon as the caller is finished. That is when they:\n"
+        "- thank you without asking anything else (\"thank you\", \"thanks\", \"thanks a lot\", "
+        "\"okay, thank you\");\n"
+        "- decline more help (\"no thank you\", \"no, that's all\", \"that's it\", \"I'm good\", "
+        "\"nothing else\"), including answering no to \"Would you like additional information?\" "
+        "or \"Is there anything else?\";\n"
+        "- say goodbye (\"bye\", \"goodbye\", \"have a good day\").\n\n"
+        "Don't ask \"Is there anything else?\" first, and don't say anything yourself when you call it: "
+        "the system says the goodbye and hangs up. If the thanks comes with a new question or request "
+        "(\"thanks, and what about...\"), answer that instead and don't end the call.\n"
     )
 
 
@@ -109,6 +154,8 @@ def system_prompt(agent: Agent) -> str:
         _hours(agent),
         _knowledge(agent),
         _transfer(agent),
+        _safety(agent),
+        _ending(agent),
         PHONE_RULES,
         "# Current date and time\n\n"
         f"{now:%A, %B %-d, %Y, %-I:%M %p} ({r.timezone})"

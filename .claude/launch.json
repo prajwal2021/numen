@@ -5,6 +5,12 @@
       "name": "numen-web",
       "url": "http://localhost:3000",
       "port": 3000
+    },
+    {
+      "name": "numen-web-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "web", "run", "dev"],
+      "port": 3000
     }
   ]
 }

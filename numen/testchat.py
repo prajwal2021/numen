@@ -40,7 +40,43 @@ TOOLS = {
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    "get_safety_help": {
+        "type": "function",
+        "function": {
+            "name": "get_safety_help",
+            "description": "Tell a caller in danger who to call. Use straight away, without a knowledge-base "
+                           "search, when the caller describes an emergency happening now (kind \"emergency\": "
+                           "someone hurt or in danger, a medical emergency, violence, a fire) or talks about "
+                           "suicide, wanting to die, or hurting themselves, or is in severe emotional crisis "
+                           "(kind \"crisis\").",
+            "parameters": {
+                "type": "object",
+                "properties": {"kind": {"type": "string", "enum": ["emergency", "crisis"],
+                                        "description": "\"emergency\" or \"crisis\"."}},
+                "required": ["kind"],
+            },
+        },
+    },
+    "end_call": {
+        "type": "function",
+        "function": {
+            "name": "end_call",
+            "description": "End the phone call. Call this when the caller is finished: they thank you without "
+                           "asking anything else (\"thank you\", \"thanks\", \"no thank you\", \"that's all\", "
+                           "\"that's it\"), say goodbye, or say they have no more questions. Don't call it if the "
+                           "caller asks something else in the same breath.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 }
+
+
+def tools_for(agent: Agent, has_kb: bool) -> list[dict]:
+    """The same tools the live call gets (numen/bot.py run_bot)."""
+    return (([TOOLS["search_knowledge_base"]] if has_kb else [])
+            + ([TOOLS["transfer_to_live_agent"]] if agent.routing.transfer_enabled else [])
+            + ([TOOLS["get_safety_help"]] if agent.safety.enabled else [])
+            + ([TOOLS["end_call"]] if agent.conversation.end_call_enabled else []))
 
 
 def start(agent: Agent) -> dict:
@@ -63,8 +99,9 @@ async def send(agent: Agent, session_id: str, text: str) -> dict:
     if not settings.openai_api_key:
         raise ValueError("OpenAI API key is not set (Settings > Integrations).")
     kb = store.get(KnowledgeBase, agent.knowledge.knowledge_base_id) if agent.knowledge.knowledge_base_id else None
-    tools = ([TOOLS["search_knowledge_base"]] if kb else []) + (
-        [TOOLS["transfer_to_live_agent"]] if agent.routing.transfer_enabled else [])
+    if s.get("ended"):
+        raise KeyError("the call has ended; start a new test")
+    tools = tools_for(agent, kb is not None)
     msgs = s["messages"]
     msgs.append({"role": "user", "content": text})
     client = AsyncOpenAI(api_key=settings.openai_api_key)
@@ -80,6 +117,8 @@ async def send(agent: Agent, session_id: str, text: str) -> dict:
             events.append({"type": "bot", "source": "llm", "text": m.content or "", "latency_ms": llm_ms})
             break
         msgs.append(m.model_dump(exclude_none=True))
+        if m.content:  # spoken on a real call too, before the tools run
+            events.append({"type": "bot", "source": "llm", "text": m.content, "latency_ms": llm_ms})
         run_llm_again = False
         for call in m.tool_calls:
             args = json.loads(call.function.arguments or "{}")
@@ -105,6 +144,22 @@ async def send(agent: Agent, session_id: str, text: str) -> dict:
                 events.append({"type": "transfer", "number": number,
                                "office_open": routing.office_is_open(agent.routing), "simulated": True})
                 msgs.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps({"status": "transferring"})})
+            elif call.function.name == "get_safety_help":
+                kind = "emergency" if args.get("kind") == "emergency" else "crisis"
+                message = agent.safety.emergency_message if kind == "emergency" else agent.safety.crisis_message
+                events.append({"type": "bot", "source": f"safety_{kind}", "text": message})
+                msgs.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(
+                    {"status": "safety message spoken to caller", "spoken_to_caller": message})})
+            elif call.function.name == "end_call":
+                goodbye = agent.conversation.goodbye_message
+                if goodbye:
+                    events.append({"type": "bot", "source": "goodbye", "text": goodbye})
+                events.append({"type": "end_call", "simulated": True})
+                msgs.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps({"status": "ending call"})})
+                s["ended"] = True
+            else:
+                msgs.append({"role": "tool", "tool_call_id": call.id,
+                             "content": json.dumps({"error": f"unknown tool {call.function.name}"})})
         if not run_llm_again:
             break
     return {"events": events}

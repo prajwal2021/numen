@@ -75,7 +75,7 @@ Call `transfer_to_live_agent` when:
 - the caller asks for a person, a live agent, a representative, or "someone"; or
 - you (or the system) offered to transfer them and they say yes.
 
-If they decline the offer, don't transfer; ask how else you can help. Don't announce the transfer, mention voicemail, or say goodbye yourself: the system tells the caller where they are being transferred, based on the time of day.
+If they decline the offer, don't transfer; if they're also done ("no thanks"), end the call, otherwise ask how else you can help. Don't announce the transfer, mention voicemail, or say goodbye yourself: the system tells the caller where they are being transferred, based on the time of day.
 
 # Phone setup
 

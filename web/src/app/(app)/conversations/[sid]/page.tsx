@@ -20,6 +20,10 @@ const SOURCE: Record<string, string> = {
   lookup_filler: "Filler",
   transfer_message: "Transfer message",
   transfer_failed: "Transfer failed",
+  goodbye: "Goodbye",
+  safety_emergency: "Safety · emergency",
+  safety_crisis: "Safety · crisis support",
+  max_duration: "Time limit",
   llm: "LLM",
 };
 

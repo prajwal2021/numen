@@ -226,7 +226,7 @@ def _kpis(c, since, until, agent) -> dict:
                coalesce(sum((summary->>'kb_misses')::int), 0) AS kb_misses,
                coalesce(sum((summary->>'kb_failures')::int), 0) AS kb_failures,
                count(*) FILTER (WHERE end_reason LIKE 'transferred%%') AS transferred_calls,
-               count(*) FILTER (WHERE end_reason = 'caller hung up') AS completed_calls,
+               count(*) FILTER (WHERE end_reason IN ('caller hung up', 'agent ended the call')) AS completed_calls,
                coalesce(sum((summary->>'errors')::int), 0) AS errors
         FROM calls WHERE {_FILTER}"""), p).first()
     lat = c.execute(text(f"""
@@ -266,7 +266,7 @@ def analytics(days: int, agent_id: str | None, tz: str) -> dict:
             FROM calls WHERE {_FILTER} GROUP BY 1 ORDER BY 1"""), p).all()
         outcomes = c.execute(text(f"""
             SELECT CASE
-                     WHEN end_reason = 'caller hung up' THEN 'completed'
+                     WHEN end_reason IN ('caller hung up', 'agent ended the call') THEN 'completed'
                      WHEN end_reason LIKE 'transferred (called outside%%' THEN 'after_hours_transfer'
                      WHEN end_reason LIKE 'transferred%%' THEN 'transferred'
                      WHEN end_reason = 'no agent assigned' THEN 'no_agent'

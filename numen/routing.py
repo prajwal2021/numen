@@ -82,3 +82,16 @@ async def transfer_call(call_sid: str, number: str) -> tuple[bool, str | None]:
     except Exception as e:
         logger.exception(f"Transfer of call {call_sid} failed")
         return False, f"{type(e).__name__}: {e}"
+
+
+async def hang_up(call_sid: str) -> tuple[bool, str | None]:
+    """End the live Twilio call."""
+    s = get_settings()
+    try:
+        twilio = TwilioClient(s.twilio_account_sid, s.twilio_auth_token)
+        await asyncio.to_thread(twilio.calls(call_sid).update, status="completed")
+        logger.info(f"Hung up call {call_sid}")
+        return True, None
+    except Exception as e:
+        logger.warning(f"Hang-up of call {call_sid} failed: {e}")
+        return False, f"{type(e).__name__}: {e}"

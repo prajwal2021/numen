@@ -144,6 +144,11 @@ export function KnowledgeTab({ draft, patch }: { draft: Agent; patch: Patch }) {
             <Field label="After an answer" hint="Leave empty for none.">
               <Input value={k.follow_up} onChange={(e) => patch("knowledge", { follow_up: e.target.value })} />
             </Field>
+            <ToggleRow
+              title="Typing sound while looking up"
+              description="A faint keyboard sound plays while the agent searches, so the pause feels natural."
+              control={<Switch checked={k.typing_sound} onCheckedChange={(v) => patch("knowledge", { typing_sound: v })} />}
+            />
             {kb && (
               <Field label="When there's no answer" hint="Set on the knowledge base.">
                 <p className="rounded-lg border bg-muted/30 px-3 py-2 text-[13px]">{kb.fallback_message}</p>

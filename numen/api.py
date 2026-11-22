@@ -145,7 +145,7 @@ def update_agent(agent_id: str, body: dict, request: Request):
     store.save(a)
     before, after = old.model_dump(mode="json"), a.model_dump(mode="json")
     changed = {}
-    for section in ("name", "description", "greeting", "prompt", "llm", "voice", "knowledge", "routing", "conversation"):
+    for section in ("name", "description", "greeting", "prompt", "llm", "voice", "knowledge", "routing", "conversation", "safety"):
         if before[section] != after[section]:
             if isinstance(after[section], dict):
                 changed[section] = {k: {"from": before[section].get(k), "to": v} for k, v in after[section].items()
