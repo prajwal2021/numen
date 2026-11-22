@@ -25,6 +25,9 @@ services:
       PUBLIC_BASE_URL: https://tosmonline0001.ttu.edu/numen-voice
       APP_BASE_URL: https://tosmonline0001.ttu.edu/numen
       LOG_DIR: /app/logs
+      # Each call creates and frees speech models from worker threads; glibc's default of one
+      # malloc arena per thread kept that memory, growing ~30 MB per call. Two arenas level off.
+      MALLOC_ARENA_MAX: "2"
     depends_on: {db: {condition: service_healthy}}
     ports: ["127.0.0.1:7860:7860"]
     volumes: ["../logs:/app/logs"]
