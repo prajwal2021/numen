@@ -156,9 +156,10 @@ async def audit_requests(request: Request, call_next):
     return response
 
 
-def _public_host(request: Request) -> str:
+async def _public_host(request: Request) -> str:
     """Host Twilio should open the media stream to (e.g. abc123.ngrok-free.dev)."""
-    host = store.get_settings().public_base_url or request.headers.get("x-forwarded-host") or request.url.hostname
+    settings = await asyncio.to_thread(store.get_settings)  # a DB read: keep it off the event loop
+    host = settings.public_base_url or request.headers.get("x-forwarded-host") or request.url.hostname
     return host.removeprefix("https://").removeprefix("http://").rstrip("/")
 
 
@@ -196,9 +197,9 @@ def _turn_away(reason: str) -> Response:
     return _twiml(f"<Say>{escape(_TURN_AWAY.get(reason, _TURN_AWAY['full']))}</Say><Hangup/>")
 
 
-def _hold(request: Request, d: Decision) -> Response:
+async def _hold(request: Request, d: Decision) -> Response:
     """Keep a queued caller on the line: a message, a pause, then come back to /incoming/hold."""
-    url = f"https://{_public_host(request)}/incoming/hold?ticket={quote(d.ticket)}"
+    url = f"https://{await _public_host(request)}/incoming/hold?ticket={quote(d.ticket)}"
     lead = ""
     if d.polls == 0:
         n = d.position
@@ -215,7 +216,7 @@ async def _admit_twiml(request: Request, agent: Agent, frm: str | None, to: str 
     """The TwiML that connects an admitted call to the agent (after its ring time)."""
     if agent.conversation.ring_seconds > 0:
         await asyncio.sleep(min(agent.conversation.ring_seconds, 10))
-    stream_url = f"wss://{_public_host(request)}/ws"
+    stream_url = f"wss://{await _public_host(request)}/ws"
     params = "".join(
         f"<Parameter name={quoteattr(k)} value={quoteattr(str(v or ''))} />"
         for k, v in {"agent_id": agent.id, "from": frm, "to": to}.items()
@@ -239,10 +240,11 @@ async def incoming_call(request: Request):
     logger.info(f"Call {sid}: {d.status} {d.reason} (active {limiter.live}/{limiter.limits.max_calls}, "
                 f"queued {limiter.queued})")
     if d.status == "rejected":
-        audit.record("system", f"Turned away a call ({d.reason})", target=sid, caller=frm, dialed=to)
+        await asyncio.to_thread(audit.record, "system", f"Turned away a call ({d.reason})", target=sid,
+                                caller=frm, dialed=to)
         return _turn_away(d.reason)
     if d.status == "queued":
-        return _hold(request, d)
+        return await _hold(request, d)
     return await _admit_twiml(request, agent, frm, to)
 
 
@@ -251,7 +253,7 @@ async def incoming_hold(request: Request, ticket: str = ""):
     """The hold loop: every few seconds a queued caller's call comes back here."""
     d = limiter.poll(ticket)
     if d.status == "queued":
-        return _hold(request, d)
+        return await _hold(request, d)
     if d.status == "rejected":
         return _turn_away(d.reason)
     agent_id, frm, to = d.meta

@@ -7,6 +7,8 @@ Auth, account, users and audit-log routes are in api_users.py.
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 from zoneinfo import available_timezones
 
@@ -188,7 +190,7 @@ class TestMessage(BaseModel):
 
 @router.post("/agents/{agent_id}/test/message")
 async def test_message(agent_id: str, body: TestMessage):
-    agent = store.get(Agent, agent_id) or _404("agent")
+    agent = await asyncio.to_thread(store.get, Agent, agent_id) or _404("agent")
     try:
         return await testchat.send(agent, body.session_id, body.text)
     except KeyError as e:
@@ -251,7 +253,7 @@ def delete_kb(kb_id: str):
 
 @router.post("/knowledge-bases/{kb_id}/health")
 async def kb_health(kb_id: str):
-    return await kb_client.health(store.get(KnowledgeBase, kb_id) or _404("knowledge base"))
+    return await kb_client.health(await asyncio.to_thread(store.get, KnowledgeBase, kb_id) or _404("knowledge base"))
 
 
 class KBQuery(BaseModel):
@@ -260,7 +262,7 @@ class KBQuery(BaseModel):
 
 @router.post("/knowledge-bases/{kb_id}/query")
 async def kb_query(kb_id: str, body: KBQuery):
-    kb = store.get(KnowledgeBase, kb_id) or _404("knowledge base")
+    kb = await asyncio.to_thread(store.get, KnowledgeBase, kb_id) or _404("knowledge base")
     r = await kb_client.lookup(kb, body.question)
     return {**r.log_fields(), "spoken": r.text}
 
@@ -270,9 +272,9 @@ async def kb_query(kb_id: str, body: KBQuery):
 
 @router.get("/phone-numbers")
 async def list_numbers():
-    nums = store.list_all(PhoneNumber)
-    agents = {a.id: a.name for a in store.list_all(Agent)}
-    hook = integrations.webhook_url()
+    nums = await asyncio.to_thread(store.list_all, PhoneNumber)
+    agents = {a.id: a.name for a in await asyncio.to_thread(store.list_all, Agent)}
+    hook = await asyncio.to_thread(integrations.webhook_url)
     try:
         twilio = {n["number"]: n for n in await integrations.twilio_numbers()}
         twilio_error = None
@@ -297,7 +299,7 @@ async def list_numbers():
 @router.get("/twilio/numbers", dependencies=ADMIN)
 async def twilio_numbers():
     try:
-        existing = {n.number for n in store.list_all(PhoneNumber)}
+        existing = {n.number for n in await asyncio.to_thread(store.list_all, PhoneNumber)}
         return [{**n, "imported": n["number"] in existing} for n in await integrations.twilio_numbers()]
     except Exception as e:
         raise HTTPException(400, str(e)[:300])
@@ -333,7 +335,7 @@ def delete_number(pn_id: str):
 
 @router.post("/phone-numbers/{pn_id}/connect", dependencies=ADMIN)
 async def connect_number(pn_id: str):
-    n = store.get(PhoneNumber, pn_id) or _404("phone number")
+    n = await asyncio.to_thread(store.get, PhoneNumber, pn_id) or _404("phone number")
     try:
         return await integrations.connect_number(n.number)
     except Exception as e:

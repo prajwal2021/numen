@@ -70,13 +70,18 @@ def describe_hours(cfg: RoutingConfig) -> str:
     return "\n".join(lines)
 
 
+def _twilio() -> TwilioClient:
+    # Reads settings from the database: call it in a thread, never on the event loop that
+    # carries every live call's audio.
+    s = get_settings()
+    return TwilioClient(s.twilio_account_sid, s.twilio_auth_token)
+
+
 async def transfer_call(call_sid: str, number: str) -> tuple[bool, str | None]:
     """Move the live Twilio call off the bot's media stream and dial `number`."""
-    s = get_settings()
+    twiml = f"<Response><Dial>{escape(number)}</Dial></Response>"
     try:
-        twilio = TwilioClient(s.twilio_account_sid, s.twilio_auth_token)
-        twiml = f"<Response><Dial>{escape(number)}</Dial></Response>"
-        await asyncio.to_thread(twilio.calls(call_sid).update, twiml=twiml)
+        await asyncio.to_thread(lambda: _twilio().calls(call_sid).update(twiml=twiml))
         logger.info(f"Transferred call {call_sid} to {number}")
         return True, None
     except Exception as e:
@@ -86,10 +91,8 @@ async def transfer_call(call_sid: str, number: str) -> tuple[bool, str | None]:
 
 async def hang_up(call_sid: str) -> tuple[bool, str | None]:
     """End the live Twilio call."""
-    s = get_settings()
     try:
-        twilio = TwilioClient(s.twilio_account_sid, s.twilio_auth_token)
-        await asyncio.to_thread(twilio.calls(call_sid).update, status="completed")
+        await asyncio.to_thread(lambda: _twilio().calls(call_sid).update(status="completed"))
         logger.info(f"Hung up call {call_sid}")
         return True, None
     except Exception as e:

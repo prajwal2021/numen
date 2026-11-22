@@ -66,7 +66,7 @@ async def twilio_number(number: str) -> dict | None:
 
 async def connect_number(number: str) -> dict:
     """Point the number's voice webhook at this server."""
-    url = webhook_url()
+    url = await asyncio.to_thread(webhook_url)
     if not url:
         raise IntegrationError("Set the Public URL first (Settings > General), e.g. your ngrok URL.")
 
@@ -145,7 +145,7 @@ async def elevenlabs_check() -> dict:
 
 
 async def openai_check() -> dict:
-    key = get_settings().openai_api_key
+    key = (await asyncio.to_thread(get_settings)).openai_api_key
     if not key:
         return {"ok": False, "detail": "OpenAI API key is not set."}
     try:

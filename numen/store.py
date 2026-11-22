@@ -21,7 +21,9 @@ from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from .models import Agent, KnowledgeBase, PhoneNumber, Settings, utcnow
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://localhost/numen")
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=5)
+# Every live call saves its log every few seconds from a worker thread, alongside the admin
+# API: size the pool so those never queue behind each other (Postgres allows 100).
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=20)
 meta = MetaData()
 
 

@@ -114,7 +114,12 @@ class CallLog:
     def error(self, message: str, **data: Any) -> None:
         self.record["errors"].append({**self._stamp(), "message": message, **data})
         self.event("error", message=message, **data)
-        audit.record("error", f"Call error: {message}", target=self.call_sid, **data)
+        # A DB write: off the event loop when there is one (errors are logged from the call).
+        try:
+            asyncio.get_running_loop().run_in_executor(
+                None, lambda: audit.record("error", f"Call error: {message}", target=self.call_sid, **data))
+        except RuntimeError:
+            audit.record("error", f"Call error: {message}", target=self.call_sid, **data)
 
     # ---- finishing ----------------------------------------------------------------
 

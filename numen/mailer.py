@@ -38,7 +38,7 @@ def _send(to: str, subject: str, text: str, html: str) -> None:
 
 
 async def send(to: str, subject: str, text: str, html: str) -> tuple[bool, str | None]:
-    if not configured():
+    if not await asyncio.to_thread(configured):
         return False, "Email isn't set up (Settings > Email)."
     try:
         await asyncio.to_thread(_send, to, subject, text, html)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -32,6 +34,10 @@ def _user_out(u: User) -> dict:
 
 def _app_link(path: str) -> str:
     return f"{store.get_settings().app_base_url.rstrip('/')}{path}"
+
+
+async def _app_link_async(path: str) -> str:
+    return await asyncio.to_thread(_app_link, path)
 
 
 def _check_password(pw: str, email: str, name: str) -> None:
@@ -123,13 +129,15 @@ async def forgot(body: ForgotBody, request: Request):
     now = time.time()
     hits = [t for t in _forgot_hits.get(email, []) if now - t < 3600]
     _forgot_hits[email] = hits + [now]
-    user = accounts.get_by_email(email)
+    user = await asyncio.to_thread(accounts.get_by_email, email)
     if user and user.status == "active" and len(hits) < 3:
-        token = accounts.create_password_token(user.id, "reset")
-        sent, err = await mailer.send_reset(user.email, user.name, _app_link(f"/reset-password?token={token}"))
-        audit.record("auth", "Requested a password reset", user=user, emailed=sent, error=err, **_ctx(request))
+        token = await asyncio.to_thread(accounts.create_password_token, user.id, "reset")
+        sent, err = await mailer.send_reset(user.email, user.name, await _app_link_async(f"/reset-password?token={token}"))
+        await asyncio.to_thread(lambda: audit.record("auth", "Requested a password reset", user=user, emailed=sent,
+                                                     error=err, **_ctx(request)))
     elif user:
-        audit.record("auth", "Password reset not sent (account not active or rate limited)", user=user, **_ctx(request))
+        await asyncio.to_thread(lambda: audit.record(
+            "auth", "Password reset not sent (account not active or rate limited)", user=user, **_ctx(request)))
     return {"ok": True}
 
 
@@ -289,16 +297,18 @@ async def create_user(body: CreateUserBody, request: Request):
             if not body.password:
                 raise HTTPException(422, [{"field": "password", "message": "Set a temporary password."}])
             _check_password(body.password, str(body.email), body.name)
-            user = accounts.create_user(data, password=body.password, must_change=True, created_by=actor.id)
+            user = await asyncio.to_thread(lambda: accounts.create_user(
+                data, password=body.password, must_change=True, created_by=actor.id))
         else:
-            user = accounts.create_user(data, status="invited", created_by=actor.id)
-            token = accounts.create_password_token(user.id, "invite")
-            link = _app_link(f"/reset-password?token={token}")
+            user = await asyncio.to_thread(lambda: accounts.create_user(data, status="invited", created_by=actor.id))
+            token = await asyncio.to_thread(accounts.create_password_token, user.id, "invite")
+            link = await _app_link_async(f"/reset-password?token={token}")
             emailed, err = await mailer.send_invite(user.email, user.name, actor.name, link)
     except ValueError as e:
         raise HTTPException(409, str(e))
-    audit.record("user", f"Created {body.role} {user.email}" + (" (invited)" if body.mode == "invite" else " (temporary password)"),
-                 user=actor, target=user.id, emailed=emailed, email_error=err, **_ctx(request))
+    await asyncio.to_thread(lambda: audit.record(
+        "user", f"Created {body.role} {user.email}" + (" (invited)" if body.mode == "invite" else " (temporary password)"),
+        user=actor, target=user.id, emailed=emailed, email_error=err, **_ctx(request)))
     return {"user": _user_out(user), "invite_link": link, "emailed": emailed, "email_error": err}
 
 
@@ -347,18 +357,19 @@ def delete_user(user_id: str, request: Request):
 async def password_link(user_id: str, request: Request):
     """A reset link (or a fresh invite link for invited users), emailed if email is set up."""
     actor: User = request.state.user
-    target = accounts.get_user(user_id) or _404()
+    target = await asyncio.to_thread(accounts.get_user, user_id) or _404()
     if target.status == "disabled":
         raise HTTPException(400, "Enable this user first.")
     purpose = "invite" if target.status == "invited" else "reset"
-    token = accounts.create_password_token(user_id, purpose)
-    link = _app_link(f"/reset-password?token={token}")
+    token = await asyncio.to_thread(accounts.create_password_token, user_id, purpose)
+    link = await _app_link_async(f"/reset-password?token={token}")
     if purpose == "invite":
         emailed, err = await mailer.send_invite(target.email, target.name, actor.name, link)
     else:
         emailed, err = await mailer.send_reset(target.email, target.name, link)
-    audit.record("user", f"Created a {'new invite' if purpose == 'invite' else 'password reset'} link for {target.email}",
-                 user=actor, target=user_id, emailed=emailed, email_error=err, **_ctx(request))
+    await asyncio.to_thread(lambda: audit.record(
+        "user", f"Created a {'new invite' if purpose == 'invite' else 'password reset'} link for {target.email}",
+        user=actor, target=user_id, emailed=emailed, email_error=err, **_ctx(request)))
     return {"link": link, "purpose": purpose, "emailed": emailed, "email_error": err,
             "expires_in_hours": accounts.INVITE_HOURS if purpose == "invite" else accounts.RESET_HOURS}
 
@@ -421,5 +432,6 @@ class TestEmailBody(BaseModel):
 @admin.post("/settings/test-email")
 async def test_email(body: TestEmailBody, request: Request):
     ok, err = await mailer.send_test(str(body.to))
-    audit.record("api", f"Sent a test email to {body.to}", user=request.state.user, ok=ok, error=err, **_ctx(request))
+    await asyncio.to_thread(lambda: audit.record("api", f"Sent a test email to {body.to}", user=request.state.user,
+                                                 ok=ok, error=err, **_ctx(request)))
     return {"ok": ok, "detail": "Sent. Check the inbox." if ok else err}

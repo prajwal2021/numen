@@ -5,6 +5,7 @@ real; transfers are simulated (nothing is dialed). Sessions live in memory.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -95,10 +96,12 @@ async def send(agent: Agent, session_id: str, text: str) -> dict:
     s = _sessions.get(session_id)
     if s is None or s["agent_id"] != agent.id:
         raise KeyError("test session expired; start a new one")
-    settings = store.get_settings()
+    # DB reads in a thread: this runs on the event loop that carries live calls' audio.
+    settings = await asyncio.to_thread(store.get_settings)
     if not settings.openai_api_key:
         raise ValueError("OpenAI API key is not set (Settings > Integrations).")
-    kb = store.get(KnowledgeBase, agent.knowledge.knowledge_base_id) if agent.knowledge.knowledge_base_id else None
+    kb_id = agent.knowledge.knowledge_base_id
+    kb = await asyncio.to_thread(store.get, KnowledgeBase, kb_id) if kb_id else None
     if s.get("ended"):
         raise KeyError("the call has ended; start a new test")
     tools = tools_for(agent, kb is not None)
